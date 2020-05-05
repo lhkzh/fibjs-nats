@@ -1,0 +1,17 @@
+{
+  "name": "fibjs-nats",
+  "version": "1.0.0",
+  "description": "",
+  "main": "./out/index.js",
+  "types": "./src/index.d.ts",
+  "private": true,
+  "author": "",
+  "homepage": "https://github.com/lhkzh/fibjs-nats",
+  "license": "ISC",
+  "dependencies": {
+  },
+  "devDependencies": {
+    "@fibjs/types": "^0.29.0"
+  },
+  "peerDependencies": {}
+}
