@@ -4,7 +4,7 @@
   "description": "",
   "main": "./out/index.js",
   "types": "./src/index.d.ts",
-  "private": true,
+  "private": false,
   "author": "",
   "homepage": "https://github.com/lhkzh/fibjs-nats",
   "license": "ISC",
