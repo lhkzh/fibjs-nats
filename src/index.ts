@@ -16,7 +16,7 @@ import nuid = require("./Nuid");
 
 export class Index extends events.EventEmitter{
     private subscriptions:{[index:string]:{subject:string, sid:string, fn:Function, num:number, t?:Class_Timer}}={}
-    private address_list:Array<NatsAddress>;
+    private address_list:Array<NatsAddress>=[];
     private default_server:NatsAddress={host:"127.0.0.1", port:4222};
     private sock:Class_Socket;
     private stream:Class_BufferedStream;
@@ -33,7 +33,7 @@ export class Index extends events.EventEmitter{
     }
     private toAddr(addr:string){
         var info=URL.parse(addr);
-        var itf:NatsAddress = {host:info.host.length>0?info.host:info.hostname, port:info.port.length>0?parseInt(info.port):4222};
+        var itf:NatsAddress = {host:info.hostname, port:info.port.length>0?parseInt(info.port):4222};
         if(info.username.length>0){
             itf.user=info.username;
             itf.pass=info.password;
@@ -138,7 +138,7 @@ export class Index extends events.EventEmitter{
             }
         }
         if(this.sock==null){
-            this.emit("error","connect_nats_fail");
+            this.emit("error","connect_nats_fail",JSON.stringify(this.address_list));
             var err=new Error("connect_nats_fail");
             console.log("nats|connect",err.message)
             throw err;
@@ -181,19 +181,20 @@ export class Index extends events.EventEmitter{
      * @param payload
      */
     public request(subject:string, payload:any):Promise<any>{
-        var sid, subs=this.subscriptions, timeout;
+        var self=this, sid, subs=self.subscriptions, timeout;
         return new Promise<any>((resolve, reject)=>{
             try{
                 var inbox = '_INBOX.'+nuid.next();
-                sid=this.subscribe(inbox, function(d){
+                sid=self.subscribe(inbox, d=>{
                     resolve(d);
                 }, 1);
                 var part=subs[sid];
-                timeout = part.t=setTimeout(function(){
+                timeout = part.t=setTimeout(()=>{
                     delete subs[sid];
-                    reject(new Error("nats_req_timeout_"+subject));
-                },this.requestTimeout);
-                this.publish(subject, payload, inbox);
+                    reject(new Error("nats_req_timeout:"+subject));
+                    self.unsubscribe(inbox);
+                },self.requestTimeout);
+                self.publish(subject, payload, inbox);
             }catch (e) {
                 if(sid){
                     delete subs[sid];
@@ -233,6 +234,10 @@ export class Index extends events.EventEmitter{
                 delete subs[sid];
                 if(timeout){
                     clearTimeout(timeout);
+                    try{
+                        this.unsubscribe(inbox);
+                    }catch (e) {
+                    }
                 }
             }
             throw e;
@@ -434,7 +439,7 @@ export class Index extends events.EventEmitter{
             }
         }
         this.sock=null;
-        console.error("nats|on_lost => %s",(this.info.host+":"+this.info.port));
+        console.error("nats|on_lost => %s",JSON.stringify(this.info));
         this.emit("lost");
         if(this.autoReconnect){
             coroutine.start(this.reconnect.bind(this));
@@ -467,20 +472,18 @@ export class Index extends events.EventEmitter{
 
 export class NatsJson extends Index{
     protected encode(payload:any):Class_Buffer{
-        var k:number;
         var pb:Class_Buffer;
         if(util.isBuffer(payload)){
             pb = <Class_Buffer>payload;
-            pb.writeUInt16BE(0);
+            pb.writeUInt8(0);
         }else{
             pb = Buffer.from(JSON.stringify(payload));
         }
-        pb.writeUInt16BE(k);
         return pb;
     }
     protected decode(data:Class_Buffer):any{
-        if(data.readInt16BE(data.length-1)==0){
-            return data.slice(0, data.length-2);
+        if(data.readUInt8(data.length-1)==0){
+            return data.slice(0, data.length-1);
         }
         return JSON.parse(data.toString());
     }
