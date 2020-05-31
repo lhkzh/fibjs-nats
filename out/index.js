@@ -15,7 +15,7 @@ const io = require("io");
 const coroutine = require("coroutine");
 const URL = require("url");
 const nuid = require("./Nuid");
-class Index extends events.EventEmitter {
+class Nats extends events.EventEmitter {
     constructor() {
         super();
         this.subscriptions = {};
@@ -23,18 +23,73 @@ class Index extends events.EventEmitter {
         this.default_server = { host: "127.0.0.1", port: 4222 };
         this.requestTimeout = 10000;
         this.pingBacks = [];
+        //name=客户端连接名字, noEcho=是否关闭连接自己发出去的消息-回显订阅
+        this.connectOption = {};
     }
     getInfo() {
-        return this.info;
+        return this.serverInfo;
     }
     toAddr(addr) {
-        var info = URL.parse(addr);
+        if (!util.isString(addr)) {
+            return addr;
+        }
+        var info = URL.parse(String(addr));
         var itf = { host: info.hostname, port: info.port.length > 0 ? parseInt(info.port) : 4222 };
         if (info.username.length > 0) {
-            itf.user = info.username;
-            itf.pass = info.password;
+            if (info.password == null || info.password.length < 1) {
+                itf.auth_token = info.auth;
+            }
+            else {
+                itf.user = info.username;
+                itf.pass = info.password;
+            }
         }
         return itf;
+    }
+    static make(cfg) {
+        let imp;
+        if (cfg) {
+            if (cfg.json) {
+                imp = new NatsJson();
+            }
+            else if (cfg.msgpack) {
+                imp = new NatsMsgpack();
+            }
+            else {
+                imp = new Nats();
+            }
+            if (cfg.url) {
+                imp.addServer(cfg.url);
+            }
+            if (cfg.urls) {
+                cfg.urls.forEach(u => {
+                    imp.addServer(u);
+                });
+            }
+            if (cfg.name) {
+                imp.connectOption.name = cfg.name;
+            }
+            if (cfg.noEcho) {
+                imp.connectOption.noEcho = cfg.noEcho;
+            }
+        }
+        else {
+            imp = new Nats();
+        }
+        return imp.connect(2);
+    }
+    /**
+     * 配置连接地址
+     * @param addr  ["nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"]
+     */
+    setServer(addr) {
+        // this.address_list= util.isArray(addr)?<Array<NatsAddress>>addr:[<NatsAddress>addr];
+        this.address_list = [];
+        var arr = util.isArray(addr) ? addr : [String(addr)];
+        arr.forEach(e => {
+            this.address_list.push(this.toAddr(e));
+        });
+        return this;
     }
     addServer(addr) {
         var itf = this.toAddr(addr);
@@ -50,35 +105,32 @@ class Index extends events.EventEmitter {
     }
     removeServer(addr) {
         var itf = this.toAddr(addr);
-        var target = JSON.stringify(itf);
         this.address_list = this.address_list.filter(e => {
-            return JSON.stringify(e) != target;
+            return e.host == itf.host && e.port == itf.port;
         });
+        if (this.serverInfo && this.serverInfo.host == itf.host && this.serverInfo.port == itf.port) {
+            this.close();
+            this.reconnect();
+        }
         return true;
-    }
-    /**
-     * 配置连接地址
-     * @param addr  ["nats://127.0.0.1:4222", "nats://zhh:pwd@127.0.0.1:4223"]
-     */
-    server(addr) {
-        // this.address_list= util.isArray(addr)?<Array<NatsAddress>>addr:[<NatsAddress>addr];
-        this.address_list = [];
-        var arr = util.isArray(addr) ? addr : [String(addr)];
-        arr.forEach(e => {
-            this.address_list.push(this.toAddr(e));
-        });
-        return this;
     }
     //重连
     reconnect() {
-        if (this.re_connet_ing)
+        let evt = this.re_connet_ing;
+        if (evt) {
+            evt.wait();
             return;
-        try {
-            this.re_connet_ing = true;
-            this.connect(8181, 50, this.autoReconnect);
         }
-        finally {
-            this.re_connet_ing = false;
+        try {
+            evt = this.re_connet_ing = new coroutine.Event();
+            this.connect(8181, 50, this.autoReconnect);
+            this.re_connet_ing = null;
+            evt.set();
+        }
+        catch (e) {
+            this.re_connet_ing = null;
+            evt.set();
+            throw e;
         }
     }
     /**
@@ -97,12 +149,12 @@ class Index extends events.EventEmitter {
             }
             this.sock = null;
             this.stream = null;
-            this.info = null;
+            this.serverInfo = null;
         }
         this.autoReconnect = autoReconnect;
         var tmps = this.address_list && this.address_list.length > 0 ? this.address_list.slice(0) : [this.default_server];
         tmps = shuffle(tmps);
-        M: for (var i = 0; i < Math.max(1, retryNum); i++) {
+        M: for (var i = 0; i < Math.max(1, retryNum * tmps.length); i++) {
             for (var j = 0; j < tmps.length; j++) {
                 var node = tmps[j];
                 try {
@@ -114,20 +166,24 @@ class Index extends events.EventEmitter {
                     if (info == null) {
                         continue;
                     }
-                    var conn;
+                    var opt = { verbose: false, pedantic: false, ssl_required: false, name: this.connectOption.name || "", lang: "fibjs", version: "1.0.0" };
+                    if (this.connectOption.noEcho) {
+                        opt.echo = false;
+                    }
                     if (node.user && node.pass) {
-                        conn = `CONNECT {"user":"${node.user}","pass":"${node.pass}","verbose":false,"pedantic":false,"ssl_required":false,"name":"","lang":"fibjs","version":"1.0.0"}\r\n`;
+                        opt.user = node.user;
+                        opt.pass = node.pass;
                     }
-                    else {
-                        conn = `CONNECT {"verbose":false,"pedantic":false,"ssl_required":false,"name":"","lang":"fibjs","version":"1.0.0"}\r\n`;
+                    else if (node.auth_token) {
+                        opt.auth_token = node.auth_token;
                     }
-                    sock.send(Buffer.from(conn));
+                    sock.send(Buffer.from(`CONNECT ${JSON.stringify(opt)}\r\n`));
                     sock.send(B_PING_EOL);
                     var rsp = stream.readLine(8);
                     if (rsp != null) {
                         this.sock = sock;
                         this.stream = stream;
-                        this.info = JSON.parse(info.toString().split(" ")[1]);
+                        this.serverInfo = JSON.parse(info.toString().split(" ")[1]);
                         break M;
                     }
                 }
@@ -145,20 +201,9 @@ class Index extends events.EventEmitter {
             throw err;
         }
         coroutine.start(this.read2pass.bind(this));
+        return this;
     }
     ping() {
-        // return new Promise<boolean>(resolve=>{
-        //     if(!this.sock){
-        //         resolve(false);
-        //     }else{
-        //         try{
-        //             this.send(B_PING_EOL);
-        //             this.pingBacks.push(resolve);
-        //         }catch (e) {
-        //             resolve(false);
-        //         }
-        //     }
-        // });
         if (!this.sock) {
             return false;
         }
@@ -339,6 +384,8 @@ class Index extends events.EventEmitter {
         catch (e) {
             this.on_lost();
             if (this.autoReconnect) {
+                if (!this.sock)
+                    this.reconnect();
                 this.sock.send(payload);
             }
             else {
@@ -448,7 +495,7 @@ class Index extends events.EventEmitter {
             }
         }
         this.sock = null;
-        console.error("nats|on_lost => %s", JSON.stringify(this.info));
+        console.error("nats|on_lost => %s", JSON.stringify(this.serverInfo));
         this.emit("lost");
         if (this.autoReconnect) {
             coroutine.start(this.reconnect.bind(this));
@@ -479,8 +526,8 @@ class Index extends events.EventEmitter {
         return data;
     }
 }
-exports.Index = Index;
-class NatsJson extends Index {
+exports.Nats = Nats;
+class NatsJson extends Nats {
     encode(payload) {
         var pb;
         if (util.isBuffer(payload)) {
@@ -500,7 +547,7 @@ class NatsJson extends Index {
     }
 }
 exports.NatsJson = NatsJson;
-class NatsMsgpack extends Index {
+class NatsMsgpack extends Nats {
     encode(payload) {
         return require('msgpack').encode(payload);
     }

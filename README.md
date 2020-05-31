@@ -7,16 +7,14 @@ nats-client nats客户端实现
  * https://github.com/lhkzh/fibjs-nats  
  
  使用  
- const NatsJson = require("fibjs-nats").NatsJson;  
- let nc = new NatsJson();  
- nc.server(["nats://127.0.0.1:4222"]);  
- nc.connect();  
+ const Nats = require("fibjs-nats").Nats; 
+ let nc = Nats.make({json:true,url:"nats://127.0.0.1:4222"});  
  
  nc.subscribe("svr.sum",function (data,meta) {  
      meta.reply(data.a+data.b);  
  });  
  
- var total=5000,now=0,startTm=Date.now();  
+var total=5000,now=0,startTm=Date.now();  
 rcImp(total);  
  function rcImp(n) {  
      for(var i=0;i<n;i++){  
