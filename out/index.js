@@ -118,7 +118,12 @@ class Nats extends events.EventEmitter {
     reconnect() {
         let evt = this.re_connet_ing;
         if (evt) {
+            let fail_err = new Error();
             evt.wait();
+            if (evt["_err_"]) {
+                fail_err.message = evt["_err_"].message;
+                throw fail_err;
+            }
             return;
         }
         try {
@@ -128,6 +133,7 @@ class Nats extends events.EventEmitter {
             evt.set();
         }
         catch (e) {
+            this.re_connet_ing["_err_"] = e;
             this.re_connet_ing = null;
             evt.set();
             throw e;
@@ -152,21 +158,28 @@ class Nats extends events.EventEmitter {
             this.serverInfo = null;
         }
         this.autoReconnect = autoReconnect;
-        var tmps = this.address_list && this.address_list.length > 0 ? this.address_list.slice(0) : [this.default_server];
+        let tmps = this.address_list && this.address_list.length > 0 ? this.address_list.slice(0) : [this.default_server];
         tmps = shuffle(tmps);
-        M: for (var i = 0; i < Math.max(1, retryNum * tmps.length); i++) {
-            for (var j = 0; j < tmps.length; j++) {
-                var node = tmps[j];
+        M: for (let i = 0; i < Math.max(1, retryNum * tmps.length); i++) {
+            for (let j = 0; j < tmps.length; j++) {
+                let node = tmps[j], fail_at = "open_sock";
+                let sock = new net.Socket();
                 try {
-                    var sock = new net.Socket();
                     sock.connect(node.host, node.port);
-                    var stream = new io.BufferedStream(sock);
+                    let stream = new io.BufferedStream(sock);
                     stream.EOL = "\r\n";
-                    var info = stream.readLine(360);
+                    let info = stream.readLine(360);
                     if (info == null) {
                         continue;
                     }
-                    var opt = { verbose: false, pedantic: false, ssl_required: false, name: this.connectOption.name || "", lang: "fibjs", version: "1.0.0" };
+                    let opt = {
+                        verbose: false,
+                        pedantic: false,
+                        ssl_required: false,
+                        name: this.connectOption.name || "fibjs-nats",
+                        lang: "fibjs",
+                        version: "1.0.0"
+                    };
                     if (this.connectOption.noEcho) {
                         opt.echo = false;
                     }
@@ -177,17 +190,22 @@ class Nats extends events.EventEmitter {
                     else if (node.auth_token) {
                         opt.auth_token = node.auth_token;
                     }
+                    fail_at = "auth_connect";
                     sock.send(Buffer.from(`CONNECT ${JSON.stringify(opt)}\r\n`));
                     sock.send(B_PING_EOL);
-                    var rsp = stream.readLine(8);
-                    if (rsp != null) {
+                    if (stream.readLine(8) != null) {
                         this.sock = sock;
                         this.stream = stream;
                         this.serverInfo = JSON.parse(info.toString().split(" ")[1]);
                         break M;
                     }
+                    else {
+                        sock.close();
+                    }
                 }
                 catch (e) {
+                    sock.close();
+                    console.error('Nats|open_fail', node.host + ':' + node.port, fail_at);
                 }
             }
             if (retryDelay > 0) {
@@ -196,11 +214,12 @@ class Nats extends events.EventEmitter {
         }
         if (this.sock == null) {
             this.emit("error", "connect_nats_fail", JSON.stringify(this.address_list));
-            var err = new Error("connect_nats_fail");
+            let err = new Error("connect_nats_fail");
             console.log("nats|connect", err.message);
             throw err;
         }
-        coroutine.start(this.read2pass.bind(this));
+        this.reader = coroutine.start(this.read2parse.bind(this));
+        coroutine.sleep(1);
         return this;
     }
     ping() {
@@ -318,7 +337,7 @@ class Nats extends events.EventEmitter {
             fn: callBack,
             num: limit > 0 ? limit : -1
         };
-        this.send(Buffer.from('SUB ' + subject + ' ' + sid + '\r\n'));
+        this.send(Buffer.from(`SUB ${subject} ${sid}\r\n`));
         return sid;
     }
     /**
@@ -355,21 +374,25 @@ class Nats extends events.EventEmitter {
         });
     }
     close() {
-        var last = this.autoReconnect;
+        this.autoReconnect = false;
         if (this.sock) {
             this.sock.close();
         }
-        coroutine.sleep(10);
-        this.autoReconnect = last;
+        if (this.reader) {
+            this.reader.join();
+        }
+        else {
+            coroutine.sleep(16);
+        }
     }
     //发布数据
     publish(subject, payload, inbox) {
-        var arr = [B_PUB, Buffer.from(subject)];
+        let arr = [B_PUB, Buffer.from(subject)];
         if (inbox) {
             arr.push(B_SPACE, Buffer.from(inbox));
         }
         if (payload != null) {
-            var pb = this.encode(payload);
+            let pb = this.encode(payload);
             arr.push(Buffer.from(" " + pb.length + "\r\n"), pb, B_EOL);
         }
         else {
@@ -421,16 +444,16 @@ class Nats extends events.EventEmitter {
             console.error("nats|process", e);
         }
     }
-    read2pass() {
-        var sock = this.sock;
-        var stream = this.stream;
-        var processMsg = this.process.bind(this);
-        var processPong = this.process_pong.bind(this);
-        var subVals = Object.values(this.subscriptions);
+    read2parse() {
+        let sock = this.sock;
+        let stream = this.stream;
+        let processMsg = this.process.bind(this);
+        let processPong = this.process_pong.bind(this);
+        let subVals = Object.values(this.subscriptions);
         if (subVals.length > 0) {
             try {
                 subVals.forEach(e => {
-                    this.send(Buffer.from('SUB ' + e.subject + ' ' + e.sid + '\r\n'));
+                    this.send(Buffer.from(`SUB ${e.subject} ${e.sid}\r\n`));
                 });
             }
             catch (e) {
@@ -438,7 +461,7 @@ class Nats extends events.EventEmitter {
         }
         while (sock == this.sock) {
             try {
-                var line = stream.readLine();
+                let line = stream.readLine();
                 if (this.is_read_fail(line)) {
                     // console.log("read_fail:0",line,data);
                     break;
@@ -455,17 +478,17 @@ class Nats extends events.EventEmitter {
                     continue;
                 }
                 //MSG subject sid size
-                var arr = line.split(" ");
-                var subject = arr[1];
-                var sid = arr[2];
-                var inbox = arr.length > 4 ? arr[3] : null;
-                var len = arr.length > 4 ? Number(arr[4]) : Number(arr[3]);
+                let arr = line.split(" ");
+                let subject = arr[1];
+                let sid = arr[2];
+                let inbox = arr.length > 4 ? arr[3] : null;
+                let len = arr.length > 4 ? Number(arr[4]) : Number(arr[3]);
                 // console.log(line, len);
                 if (len == 0) {
                     coroutine.start(processMsg, subject, sid, EMPTY_BUF, inbox);
                     continue;
                 }
-                var data = stream.read(len);
+                let data = stream.read(len);
                 // console.log(data, String(data))
                 if (this.is_read_fail(data)) {
                     // console.log("read_fail:1",line,data);
@@ -475,9 +498,11 @@ class Nats extends events.EventEmitter {
                 coroutine.start(processMsg, subject, sid, data, inbox);
             }
             catch (e) {
-                console.error("nats|read2pass", e);
+                console.error("nats|read2parse", e);
+                break;
             }
         }
+        sock.close();
     }
     is_read_fail(d) {
         if (d == null) {

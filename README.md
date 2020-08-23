@@ -7,9 +7,16 @@ nats-client nats客户端实现
  * https://github.com/lhkzh/fibjs-nats  
  
  使用  
- const Nats = require("fibjs-nats").Nats; 
- let nc = Nats.make({json:true,url:"nats://127.0.0.1:4222"});  
- 
+<pre>
+<code>
+ const Nats = require("fibjs-nats").Nats;  
+ //无授权认证方式
+ var nc = Nats.make({json:true,url:"nats://127.0.0.1:4222"});  
+ //通过-username:password认证
+ var nc_auth_userpassword = Nats.make({json:true,url:"nats://myusername:mypassword@127.0.0.1:4222"});  
+ //通过-authtoken认证
+ var nc_auth_token = Nats.make({json:true,url:"nats://mytoken@127.0.0.1:4222"});  
+  
  nc.subscribe("svr.sum",function (data,meta) {  
      meta.reply(data.a+data.b);  
  });  
@@ -28,5 +35,8 @@ rcImp(total);
          }  
      }  
  }  
+</code>
+</pre> 
+
  
  
