@@ -31,8 +31,7 @@ class Nuid {
     setPre() {
         const cbuf = crypto.randomBytes(preLen);
         for (let i = 0; i < preLen; i++) {
-            const di = cbuf[i] % base;
-            this.buf[i] = digits.charCodeAt(di);
+            this.buf[i] = digits.charCodeAt(cbuf[i] % base);
         }
     }
     fillSeq() {

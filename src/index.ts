@@ -1,11 +1,4 @@
 /// <reference types="@fibjs/types" />
-/**
- * nats客户端实现
- * 协议参考
- * https://www.cnblogs.com/liang1101/p/6641348.html
- * https://github.com/repejota/phpnats
- */
-// const OPTIONS={"verbose":false,"pedantic":false,"ssl_required":false,"name":"","lang":"fibjs","version":"1.0.0"};
 import util = require('util');
 import events = require('events');
 import net = require('net');
@@ -14,8 +7,14 @@ import coroutine = require('coroutine');
 import URL = require("url");
 import nuid = require("./Nuid");
 
+/**
+ * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
+ * 协议参考
+ * https://www.cnblogs.com/liang1101/p/6641348.html
+ * https://github.com/repejota/phpnats
+ */
 export class Nats extends events.EventEmitter {
-    private subscriptions:{[index:string]:{subject:string, sid:string, fn:(data:any, meta?:{subject:any, sid:string, reply?:(replyData:any)=>void})=>void, num:number, t?:Class_Timer}}={}
+    private subscriptions: { [index: string]: { subject: string, sid: string, fn: (data: any, meta?: { subject: any, sid: string, reply?: (replyData: any) => void }) => void, num: number, t?: Class_Timer } } = {}
     private address_list: Array<NatsAddress> = [];
     private default_server: NatsAddress = {host: "127.0.0.1", port: 4222};
     private sock: Class_Socket;
@@ -23,7 +22,6 @@ export class Nats extends events.EventEmitter {
     private serverInfo: NatsServerInfo;
     private autoReconnect: boolean;
     private re_connet_ing: Class_Event;
-    private reader:Class_Fiber;
     private pingBacks: Array<(suc: boolean) => void> = [];
     //name=客户端连接名字, noEcho=是否关闭连接自己发出去的消息-回显订阅
     public connectOption: { name?: string, noEcho?: boolean } = {};
@@ -40,8 +38,8 @@ export class Nats extends events.EventEmitter {
         if (!util.isString(addr)) {
             return <NatsAddress>addr;
         }
-        var info = URL.parse(String(addr));
-        var itf: NatsAddress = {host: info.hostname, port: info.port.length > 0 ? parseInt(info.port) : 4222};
+        let info = URL.parse(String(addr));
+        let itf: NatsAddress = {host: info.hostname, port: info.port.length > 0 ? parseInt(info.port) : 4222};
         if (info.username.length > 0) {
             if (info.password == null || info.password.length < 1) {
                 itf.auth_token = info.auth;
@@ -53,6 +51,7 @@ export class Nats extends events.EventEmitter {
         return itf;
     }
 
+    //构建一个-并主动链接
     public static make(cfg?: { json?: boolean, msgpack?: boolean, name?: string, noEcho?: boolean, url?: string | NatsAddress, urls?: string[] | NatsAddress[] }) {
         let imp: Nats;
         if (cfg) {
@@ -90,17 +89,17 @@ export class Nats extends events.EventEmitter {
     public setServer(addr: Array<string> | string) {
         // this.address_list= util.isArray(addr)?<Array<NatsAddress>>addr:[<NatsAddress>addr];
         this.address_list = [];
-        var arr = util.isArray(addr) ? <Array<string>>addr : [String(addr)];
-        arr.forEach(e => {
+        (util.isArray(addr) ? <Array<string>>addr : [String(addr)]).forEach(e => {
             this.address_list.push(this.toAddr(e));
         });
         return this;
     }
 
+    //添加服务地址
     public addServer(addr: string | NatsAddress) {
-        var itf = this.toAddr(addr);
-        var target = JSON.stringify(itf);
-        var had = this.address_list.some(e => {
+        let itf = this.toAddr(addr);
+        let target = JSON.stringify(itf);
+        let had = this.address_list.some(e => {
             return JSON.stringify(e) == target;
         });
         if (had) {
@@ -110,8 +109,9 @@ export class Nats extends events.EventEmitter {
         return this;
     }
 
+    //移除一个节点服务
     public removeServer(addr: string) {
-        var itf = this.toAddr(addr);
+        let itf = this.toAddr(addr);
         this.address_list = this.address_list.filter(e => {
             return e.host == itf.host && e.port == itf.port;
         });
@@ -140,8 +140,8 @@ export class Nats extends events.EventEmitter {
             this.re_connet_ing = null;
             evt.set();
         } catch (e) {
-            this.re_connet_ing["_err_"] = e;
             this.re_connet_ing = null;
+            evt["_err_"] = e;
             evt.set();
             throw e;
         }
@@ -154,7 +154,7 @@ export class Nats extends events.EventEmitter {
      * @param autoReconnect
      */
     public connect(retryNum: number = 3, retryDelay: number = 60, autoReconnect: boolean = true) {
-        var last = this.sock;
+        let last = this.sock;
         if (last != null) {
             try {
                 last.close();
@@ -169,11 +169,10 @@ export class Nats extends events.EventEmitter {
         tmps = shuffle(tmps);
         M:for (let i = 0; i < Math.max(1, retryNum * tmps.length); i++) {
             for (let j = 0; j < tmps.length; j++) {
-                let node = tmps[j], fail_at="open_sock";
-                let sock = new net.Socket();
+                let node = tmps[j], fail_at = "open_sock", sock = new net.Socket(), stream: Class_BufferedStream;
                 try {
                     sock.connect(node.host, node.port);
-                    let stream = new io.BufferedStream(sock);
+                    stream = new io.BufferedStream(sock);
                     stream.EOL = "\r\n";
                     let info = stream.readLine(360);
                     if (info == null) {
@@ -204,12 +203,12 @@ export class Nats extends events.EventEmitter {
                         this.stream = stream;
                         this.serverInfo = JSON.parse(info.toString().split(" ")[1]);
                         break M;
-                    }else{
+                    } else {
                         sock.close();
                     }
                 } catch (e) {
                     sock.close();
-                    console.error('Nats|open_fail',node.host+':'+node.port,fail_at);
+                    console.error('Nats|open_fail', node.host + ':' + node.port, fail_at);
                 }
             }
             if (retryDelay > 0) {
@@ -222,19 +221,22 @@ export class Nats extends events.EventEmitter {
             console.log("nats|connect", err.message)
             throw err;
         }
-        this.reader = coroutine.start(this.read2parse.bind(this));
-        coroutine.sleep(1);
+        coroutine.start(this.read2pass.bind(this));
+        coroutine.sleep();
         return this;
     }
 
+    /**
+     * 检测是否能连通
+     */
     public ping(): boolean {
         if (!this.sock) {
             return false;
         }
         try {
             this.send(B_PING_EOL);
-            var evt = new coroutine.Event(false);
-            var ret: boolean;
+            let evt = new coroutine.Event(false),
+                ret: boolean;
             this.pingBacks.push(suc => {
                 ret = suc;
                 evt.set();
@@ -251,7 +253,7 @@ export class Nats extends events.EventEmitter {
      * @param subject
      * @param payload
      */
-    public request(subject: string, payload: any, timeoutTtl:number=3000): Promise<any> {
+    public request(subject: string, payload: any, timeoutTtl: number = 3000): Promise<any> {
         let self = this, sid, subs = self.subscriptions, timeout;
         return new Promise<any>((resolve, reject) => {
             try {
@@ -283,14 +285,13 @@ export class Nats extends events.EventEmitter {
      * @param subject
      * @param payload
      */
-    public requestSync(subject: string, payload: any, timeoutTtl:number=3000): any {
-        let self=this,
-            sid,
+    public requestSync(subject: string, payload: any, timeoutTtl: number = 3000): any {
+        let self = this,
             subs = this.subscriptions,
-            rsp,
             inbox = '_INBOX.' + nuid.next(),
-            isTimeouted, timeout: Class_Timer,
-            evt = new coroutine.Event(false);
+            evt = new coroutine.Event(false),
+            isTimeouted, timeout: Class_Timer, sid: string, rsp: any
+        ;
 
         try {
             sid = this.subscribe(inbox, function (d) {
@@ -298,6 +299,7 @@ export class Nats extends events.EventEmitter {
                 evt.set();
             }, 1);
             timeout = subs[sid].t = setTimeout(function () {
+                isTimeouted = true;
                 delete subs[sid];
                 evt.set();
                 try {
@@ -329,23 +331,24 @@ export class Nats extends events.EventEmitter {
     }
 
     /**
-     * 抢占式(queue)侦听
+     * 抢占式(queue)侦听主题
      * @param subject
      * @param queue
      * @param callBack
      * @param limit
      */
-    public queueSubscribe(subject: string, queue: string, callBack:  (d: any, meta?:{subject:string, sid:string, reply?:(d:any)=>void}) => void, limit?: number): string {
+    public queueSubscribe(subject: string, queue: string, callBack: (data: any, meta?: { subject: any, sid: string, reply?: (replyData: any) => void }) => void, limit?: number): string {
         return this.subscribe(subject + ' ' + queue, callBack, limit);
     }
 
     /**
-     * 订阅
-     * @param subject
-     * @param callBack
-     * @param limit
+     * 订阅主题
+     * @param subject 主题
+     * @param callBack 回调函数
+     * @param limit 限制执行次数，默认无限次
+     * @returns 订阅的编号
      */
-    public subscribe(subject: string, callBack: (d: any, meta?:{subject:string, sid:string, reply?:(d:any)=>void}) => void, limit?: number): string {
+    public subscribe(subject: string, callBack: (data: any, meta?: { subject: any, sid: string, reply?: (replyData: any) => void }) => void, limit?: number): string {
         let sid = nuid.next();
         this.subscriptions[sid] = {
             subject: subject,
@@ -359,16 +362,21 @@ export class Nats extends events.EventEmitter {
 
     /**
      * 取消订阅
+     * @param sid 订阅编号
+     * @param quantity
      */
     public unsubscribe(sid: string, quantity?: number) {
-        let msg = 'UNSUB ' + sid + (arguments.length > 1 ? ' ' + quantity : '') + '\r\n';
+        let msg = arguments.length > 1 ? `UNSUB ${sid} ${quantity}\r\n` : `UNSUB ${sid}\r\n`;
+        this.send(Buffer.from(msg));
         if (arguments.length < 2) {
             delete this.subscriptions[sid];
         }
-        this.send(Buffer.from(msg));
     }
 
-    //取消所有主题-订阅
+    /**
+     * 取消目标主题的订阅
+     * @param subject 主题
+     */
     public unsubscribeSubject(subject: string) {
         Object.values(this.subscriptions).forEach(e => {
             if (e.subject == subject) {
@@ -377,7 +385,9 @@ export class Nats extends events.EventEmitter {
         });
     }
 
-    //取消所有订阅
+    /**
+     * 取消所有订阅
+     */
     public unsubscribeAll() {
         let vals = Object.values(this.subscriptions);
         this.subscriptions = {};
@@ -392,19 +402,25 @@ export class Nats extends events.EventEmitter {
         });
     }
 
+    /**
+     * 关闭链接
+     */
     public close() {
+        let last = this.autoReconnect;
         this.autoReconnect = false;
         if (this.sock) {
             this.sock.close();
         }
-        if(this.reader){
-            this.reader.join();
-        }else{
-            coroutine.sleep(16);
-        }
+        coroutine.sleep();
+        this.autoReconnect = last;
     }
 
-    //发布数据
+    /**
+     * 发布数据
+     * @param subject 主题
+     * @param payload 数据
+     * @param inbox 队列标记
+     */
     public publish(subject: string, payload?: any, inbox?: string) {
         let arr: Array<any> = [B_PUB, Buffer.from(subject)];
         if (inbox) {
@@ -412,7 +428,7 @@ export class Nats extends events.EventEmitter {
         }
         if (payload != null) {
             let pb: Class_Buffer = this.encode(payload);
-            arr.push(Buffer.from(" " + pb.length + "\r\n"), pb, B_EOL);
+            arr.push(Buffer.from(` ${pb.length}\r\n`), pb, B_EOL);
         } else {
             arr.push(B_PUBLISH_EMPTY)
         }
@@ -433,12 +449,15 @@ export class Nats extends events.EventEmitter {
         }
     }
 
-    protected process(subject: string, sid: string, payload: Class_Buffer, inbox: string) {
+    protected process_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string) {
         let sop = this.subscriptions[sid];
         try {
             let data = payload.length > 0 ? this.decode(payload) : null;
             if (sop) {
-                let meta: any = {subject: subject, sid: sid};
+                var meta: { subject: any, sid: string, reply?: (replyData: any) => void } = {
+                    subject: subject,
+                    sid: sid
+                };
                 if (inbox) {
                     meta.reply = (replyData) => {
                         this.publish(inbox, replyData);
@@ -454,6 +473,8 @@ export class Nats extends events.EventEmitter {
                     }
                 }
                 sop.fn(data, meta);
+            } else if (inbox) {//队列选了当前执行节点，但是当前节点给取消订阅了
+                this.publish(subject, payload, inbox);
             }
             this.emit(subject, data);
         } catch (e) {
@@ -461,10 +482,10 @@ export class Nats extends events.EventEmitter {
         }
     }
 
-    private read2parse() {
+    private read2pass() {
         const sock = this.sock;
         const stream = this.stream;
-        const processMsg = this.process.bind(this);
+        const processMsg = this.process_msg.bind(this);
         const processPong = this.process_pong.bind(this);
         try {
             Object.values(this.subscriptions).forEach(e => {
@@ -508,11 +529,10 @@ export class Nats extends events.EventEmitter {
                 stream.read(2);
                 coroutine.start(processMsg, subject, sid, data, inbox);
             } catch (e) {
-                console.error("nats|read2parse", e);
+                console.error("nats|read2pass", e);
                 break;
             }
         }
-        sock.close();
     }
 
     private is_read_fail(d) {
