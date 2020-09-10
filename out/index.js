@@ -246,8 +246,8 @@ class Nats extends events.EventEmitter {
      * @param subject
      * @param payload
      */
-    request(subject, payload) {
-        var self = this, sid, subs = self.subscriptions, timeout;
+    request(subject, payload, timeoutTtl = 10000) {
+        let self = this, sid, subs = self.subscriptions, timeout;
         return new Promise((resolve, reject) => {
             try {
                 var inbox = '_INBOX.' + nuid.next();
@@ -259,7 +259,7 @@ class Nats extends events.EventEmitter {
                     delete subs[sid];
                     reject(new Error("nats_req_timeout:" + subject));
                     self.unsubscribe(inbox);
-                }, self.requestTimeout);
+                }, timeoutTtl);
                 self.publish(subject, payload, inbox);
             }
             catch (e) {
@@ -278,17 +278,22 @@ class Nats extends events.EventEmitter {
      * @param subject
      * @param payload
      */
-    requestSync(subject, payload) {
-        var sid, subs = this.subscriptions, rsp, inbox = '_INBOX.' + nuid.next(), isTimeouted, timeout, evt = new coroutine.Event(false);
+    requestSync(subject, payload, timeoutTtl = 10000) {
+        let self = this, sid, subs = this.subscriptions, rsp, inbox = '_INBOX.' + nuid.next(), isTimeouted, timeout, evt = new coroutine.Event(false);
         try {
             sid = this.subscribe(inbox, function (d) {
                 rsp = d;
                 evt.set();
             }, 1);
             timeout = subs[sid].t = setTimeout(function () {
-                isTimeouted = true;
+                delete subs[sid];
                 evt.set();
-            }, this.requestTimeout);
+                try {
+                    self.unsubscribe(inbox);
+                }
+                catch (e) {
+                }
+            }, timeoutTtl);
             this.publish(subject, payload, inbox);
         }
         catch (e) {
@@ -330,7 +335,7 @@ class Nats extends events.EventEmitter {
      * @param limit
      */
     subscribe(subject, callBack, limit) {
-        var sid = nuid.next();
+        let sid = nuid.next();
         this.subscriptions[sid] = {
             subject: subject,
             sid: sid,
@@ -417,11 +422,11 @@ class Nats extends events.EventEmitter {
         }
     }
     process(subject, sid, payload, inbox) {
-        var sop = this.subscriptions[sid];
+        let sop = this.subscriptions[sid];
         try {
-            var data = payload.length > 0 ? this.decode(payload) : null;
+            let data = payload.length > 0 ? this.decode(payload) : null;
             if (sop) {
-                var meta = { subject: subject, sid: sid };
+                let meta = { subject: subject, sid: sid };
                 if (inbox) {
                     meta.reply = (replyData) => {
                         this.publish(inbox, replyData);
@@ -445,19 +450,16 @@ class Nats extends events.EventEmitter {
         }
     }
     read2parse() {
-        let sock = this.sock;
-        let stream = this.stream;
-        let processMsg = this.process.bind(this);
-        let processPong = this.process_pong.bind(this);
-        let subVals = Object.values(this.subscriptions);
-        if (subVals.length > 0) {
-            try {
-                subVals.forEach(e => {
-                    this.send(Buffer.from(`SUB ${e.subject} ${e.sid}\r\n`));
-                });
-            }
-            catch (e) {
-            }
+        const sock = this.sock;
+        const stream = this.stream;
+        const processMsg = this.process.bind(this);
+        const processPong = this.process_pong.bind(this);
+        try {
+            Object.values(this.subscriptions).forEach(e => {
+                sock.send(Buffer.from(`SUB ${e.subject} ${e.sid}\r\n`));
+            });
+        }
+        catch (e) {
         }
         while (sock == this.sock) {
             try {

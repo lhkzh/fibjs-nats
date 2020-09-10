@@ -15,7 +15,7 @@ import URL = require("url");
 import nuid = require("./Nuid");
 
 export class Nats extends events.EventEmitter {
-    private subscriptions: { [index: string]: { subject: string, sid: string, fn: Function, num: number, t?: Class_Timer } } = {}
+    private subscriptions:{[index:string]:{subject:string, sid:string, fn:(data:any, meta?:{subject:any, sid:string, reply?:(replyData:any)=>void})=>void, num:number, t?:Class_Timer}}={}
     private address_list: Array<NatsAddress> = [];
     private default_server: NatsAddress = {host: "127.0.0.1", port: 4222};
     private sock: Class_Socket;
@@ -24,7 +24,6 @@ export class Nats extends events.EventEmitter {
     private autoReconnect: boolean;
     private re_connet_ing: Class_Event;
     private reader:Class_Fiber;
-    private requestTimeout: number = 10000;
     private pingBacks: Array<(suc: boolean) => void> = [];
     //name=客户端连接名字, noEcho=是否关闭连接自己发出去的消息-回显订阅
     public connectOption: { name?: string, noEcho?: boolean } = {};
@@ -252,8 +251,8 @@ export class Nats extends events.EventEmitter {
      * @param subject
      * @param payload
      */
-    public request(subject: string, payload: any): Promise<any> {
-        var self = this, sid, subs = self.subscriptions, timeout;
+    public request(subject: string, payload: any, timeoutTtl:number=3000): Promise<any> {
+        let self = this, sid, subs = self.subscriptions, timeout;
         return new Promise<any>((resolve, reject) => {
             try {
                 var inbox = '_INBOX.' + nuid.next();
@@ -265,7 +264,7 @@ export class Nats extends events.EventEmitter {
                     delete subs[sid];
                     reject(new Error("nats_req_timeout:" + subject));
                     self.unsubscribe(inbox);
-                }, self.requestTimeout);
+                }, timeoutTtl);
                 self.publish(subject, payload, inbox);
             } catch (e) {
                 if (sid) {
@@ -284,8 +283,9 @@ export class Nats extends events.EventEmitter {
      * @param subject
      * @param payload
      */
-    public requestSync(subject: string, payload: any): any {
-        var sid,
+    public requestSync(subject: string, payload: any, timeoutTtl:number=3000): any {
+        let self=this,
+            sid,
             subs = this.subscriptions,
             rsp,
             inbox = '_INBOX.' + nuid.next(),
@@ -298,9 +298,13 @@ export class Nats extends events.EventEmitter {
                 evt.set();
             }, 1);
             timeout = subs[sid].t = setTimeout(function () {
-                isTimeouted = true;
+                delete subs[sid];
                 evt.set();
-            }, this.requestTimeout);
+                try {
+                    self.unsubscribe(inbox);
+                } catch (e) {
+                }
+            }, timeoutTtl);
             this.publish(subject, payload, inbox);
         } catch (e) {
             if (sid) {
@@ -331,7 +335,7 @@ export class Nats extends events.EventEmitter {
      * @param callBack
      * @param limit
      */
-    public queueSubscribe(subject: string, queue: string, callBack: (d: any) => void, limit?: number): string {
+    public queueSubscribe(subject: string, queue: string, callBack:  (d: any, meta?:{subject:string, sid:string, reply?:(d:any)=>void}) => void, limit?: number): string {
         return this.subscribe(subject + ' ' + queue, callBack, limit);
     }
 
@@ -341,8 +345,8 @@ export class Nats extends events.EventEmitter {
      * @param callBack
      * @param limit
      */
-    public subscribe(subject: string, callBack: (err, d: any) => void, limit?: number): string {
-        var sid = nuid.next();
+    public subscribe(subject: string, callBack: (d: any, meta?:{subject:string, sid:string, reply?:(d:any)=>void}) => void, limit?: number): string {
+        let sid = nuid.next();
         this.subscriptions[sid] = {
             subject: subject,
             sid: sid,
@@ -357,7 +361,7 @@ export class Nats extends events.EventEmitter {
      * 取消订阅
      */
     public unsubscribe(sid: string, quantity?: number) {
-        var msg = 'UNSUB ' + sid + (arguments.length > 1 ? ' ' + quantity : '') + '\r\n';
+        let msg = 'UNSUB ' + sid + (arguments.length > 1 ? ' ' + quantity : '') + '\r\n';
         if (arguments.length < 2) {
             delete this.subscriptions[sid];
         }
@@ -375,7 +379,7 @@ export class Nats extends events.EventEmitter {
 
     //取消所有订阅
     public unsubscribeAll() {
-        var vals = Object.values(this.subscriptions);
+        let vals = Object.values(this.subscriptions);
         this.subscriptions = {};
         if (!this.sock) {
             return;
@@ -430,11 +434,11 @@ export class Nats extends events.EventEmitter {
     }
 
     protected process(subject: string, sid: string, payload: Class_Buffer, inbox: string) {
-        var sop = this.subscriptions[sid];
+        let sop = this.subscriptions[sid];
         try {
-            var data = payload.length > 0 ? this.decode(payload) : null;
+            let data = payload.length > 0 ? this.decode(payload) : null;
             if (sop) {
-                var meta: any = {subject: subject, sid: sid};
+                let meta: any = {subject: subject, sid: sid};
                 if (inbox) {
                     meta.reply = (replyData) => {
                         this.publish(inbox, replyData);
@@ -458,18 +462,15 @@ export class Nats extends events.EventEmitter {
     }
 
     private read2parse() {
-        let sock = this.sock;
-        let stream = this.stream;
-        let processMsg = this.process.bind(this);
-        let processPong = this.process_pong.bind(this);
-        let subVals = Object.values(this.subscriptions);
-        if (subVals.length > 0) {
-            try {
-                subVals.forEach(e => {
-                    this.send(Buffer.from(`SUB ${e.subject} ${e.sid}\r\n`));
-                });
-            } catch (e) {
-            }
+        const sock = this.sock;
+        const stream = this.stream;
+        const processMsg = this.process.bind(this);
+        const processPong = this.process_pong.bind(this);
+        try {
+            Object.values(this.subscriptions).forEach(e => {
+                sock.send(Buffer.from(`SUB ${e.subject} ${e.sid}\r\n`));
+            });
+        } catch (e) {
         }
         while (sock == this.sock) {
             try {
