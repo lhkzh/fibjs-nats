@@ -19,12 +19,13 @@ const encoding_1 = require("encoding");
 class Nats extends events.EventEmitter {
     constructor() {
         super();
+        this.subscriptions = new Map();
         this.address_list = [];
         this.default_server = { host: "127.0.0.1", port: 4222 };
+        this.send_lock = new coroutine.Lock();
         this.pingBacks = [];
         //name=客户端连接名字, noEcho=是否关闭连接自己发出去的消息-回显订阅
         this.connectOption = {};
-        this.send_lock = new coroutine.Lock();
     }
     getInfo() {
         return this.serverInfo;
@@ -446,11 +447,11 @@ class Nats extends events.EventEmitter {
         }
     }
     process_msg(subject, sid, payload, inbox) {
-        let sop = this.subscriptions[sid];
+        let sop = this.subscriptions.get(sid);
         try {
             let data = payload.length > 0 ? this.decode(payload) : null;
             if (sop) {
-                var meta = {
+                let meta = {
                     subject: subject,
                     sid: sid
                 };
@@ -462,7 +463,7 @@ class Nats extends events.EventEmitter {
                 if (sop.num > 1) {
                     sop.num--;
                     if (sop.num == 0) {
-                        delete this.subscriptions[sid];
+                        this.subscriptions.delete(sid);
                         if (sop.t) {
                             clearTimeout(sop.t);
                         }
@@ -485,9 +486,9 @@ class Nats extends events.EventEmitter {
         const processMsg = this.process_msg.bind(this);
         const processPong = this.process_pong.bind(this);
         try {
-            Object.values(this.subscriptions).forEach(e => {
+            for (let e of this.subscriptions.values()) {
                 sock.send(Buffer.from(`SUB ${e.subject} ${e.sid}\r\n`));
-            });
+            }
         }
         catch (e) {
         }

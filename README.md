@@ -19,22 +19,14 @@ nats-client nats客户端实现
   
  nc.subscribe("svr.sum",function (data,meta) {  
      meta.reply(data.a+data.b);  
- });  
+ });      
+ console.log(nc.requestSync("svr.sum",{a:2,b:3})==5)      
  
-var total=5000,now=0,startTm=Date.now();  
-rcImp(total);  
- function rcImp(n) {  
-     for(var i=0;i<n;i++){  
-         nc.requestSync("svr.sum",{a:1,b:Date.now()})  
-         now++;  
-         if(now%500==0){  
-             console.log(now,now/total)  
-         }  
-         if(now>=total){  
-             console.log(Date.now()-startTm, (Date.now()-startTm)/total)  
-         }  
-     }  
- }  
+ nc.subscribe("svr.log",function (data,meta) {  
+     console.log("svr.log",data);
+ });  
+ nc.publish("svr.log", "on xxx");    
+ console.log(nc.ping())
 </code>
 </pre> 
 

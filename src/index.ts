@@ -17,11 +17,11 @@ type SubInfo = { subject: string, sid: string, fn: (data: any, meta?: { subject:
  * https://github.com/repejota/phpnats
  */
 export class Nats extends events.EventEmitter {
-    private subscriptions: Map<string, SubInfo>
+    private subscriptions: Map<string, SubInfo> = new Map<string, SubInfo>();
     private address_list: Array<NatsAddress> = [];
     private default_server: NatsAddress = {host: "127.0.0.1", port: 4222};
     private sock: Class_Socket;
-    private send_lock:Class_Lock;
+    private send_lock:Class_Lock = new coroutine.Lock();
     private stream: Class_BufferedStream;
     private serverInfo: NatsServerInfo;
     private autoReconnect: boolean;
@@ -32,7 +32,6 @@ export class Nats extends events.EventEmitter {
 
     constructor() {
         super();
-        this.send_lock = new coroutine.Lock();
     }
 
     public getInfo() {
@@ -462,11 +461,11 @@ export class Nats extends events.EventEmitter {
     }
 
     protected process_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string) {
-        let sop = this.subscriptions[sid];
+        let sop = this.subscriptions.get(sid);
         try {
             let data = payload.length > 0 ? this.decode(payload) : null;
             if (sop) {
-                var meta: { subject: any, sid: string, reply?: (replyData: any) => void } = {
+                let meta: { subject: any, sid: string, reply?: (replyData: any) => void } = {
                     subject: subject,
                     sid: sid
                 };
@@ -478,7 +477,7 @@ export class Nats extends events.EventEmitter {
                 if (sop.num > 1) {
                     sop.num--;
                     if (sop.num == 0) {
-                        delete this.subscriptions[sid];
+                        this.subscriptions.delete(sid);
                         if (sop.t) {
                             clearTimeout(sop.t);
                         }
@@ -500,9 +499,9 @@ export class Nats extends events.EventEmitter {
         const processMsg = this.process_msg.bind(this);
         const processPong = this.process_pong.bind(this);
         try {
-            Object.values(this.subscriptions).forEach(e => {
+            for(let e of this.subscriptions.values()){
                 sock.send(Buffer.from(`SUB ${e.subject} ${e.sid}\r\n`));
-            });
+            }
         } catch (e) {
         }
         while (sock == this.sock) {
