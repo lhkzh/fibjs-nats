@@ -1,11 +1,14 @@
 /// <reference types="@fibjs/types" />
-import util = require('util');
-import events = require('events');
-import net = require('net');
-import io = require('io');
-import coroutine = require('coroutine');
-import URL = require("url");
-import nuid = require("./Nuid");
+import * as net from "net";
+import * as io from "io";
+import * as coroutine from "coroutine";
+import * as util from "util";
+import * as url from "url";
+import * as events from "events";
+import {nuid} from "./Nuid";
+import {msgpack} from "encoding";
+
+type SubInfo = { subject: string, sid: string, fn: (data: any, meta?: { subject: any, sid: string, reply?: (replyData: any) => void }) => void, num: number, t?: Class_Timer};
 
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
@@ -14,10 +17,11 @@ import nuid = require("./Nuid");
  * https://github.com/repejota/phpnats
  */
 export class Nats extends events.EventEmitter {
-    private subscriptions: { [index: string]: { subject: string, sid: string, fn: (data: any, meta?: { subject: any, sid: string, reply?: (replyData: any) => void }) => void, num: number, t?: Class_Timer } } = {}
+    private subscriptions: Map<string, SubInfo>
     private address_list: Array<NatsAddress> = [];
     private default_server: NatsAddress = {host: "127.0.0.1", port: 4222};
     private sock: Class_Socket;
+    private send_lock:Class_Lock;
     private stream: Class_BufferedStream;
     private serverInfo: NatsServerInfo;
     private autoReconnect: boolean;
@@ -28,6 +32,7 @@ export class Nats extends events.EventEmitter {
 
     constructor() {
         super();
+        this.send_lock = new coroutine.Lock();
     }
 
     public getInfo() {
@@ -38,7 +43,7 @@ export class Nats extends events.EventEmitter {
         if (!util.isString(addr)) {
             return <NatsAddress>addr;
         }
-        let info = URL.parse(String(addr));
+        let info = url.parse(String(addr));
         let itf: NatsAddress = {host: info.hostname, port: info.port.length > 0 ? parseInt(info.port) : 4222};
         if (info.username.length > 0) {
             if (info.password == null || info.password.length < 1) {
@@ -52,7 +57,7 @@ export class Nats extends events.EventEmitter {
     }
 
     //构建一个-并主动链接
-    public static make(cfg?: { json?: boolean, msgpack?: boolean, name?: string, noEcho?: boolean, url?: string | NatsAddress, urls?: string[] | NatsAddress[] }) {
+    public static make(cfg?: { json?: boolean, msgpack?: boolean, name?: string, noEcho?: boolean, url?: string | NatsAddress, urls?: string[] | NatsAddress[] }, retryConnectNum=3) {
         let imp: Nats;
         if (cfg) {
             if (cfg.json) {
@@ -79,7 +84,7 @@ export class Nats extends events.EventEmitter {
         } else {
             imp = new Nats();
         }
-        return imp.connect(2);
+        return imp.connect(retryConnectNum);
     }
 
     /**
@@ -87,9 +92,9 @@ export class Nats extends events.EventEmitter {
      * @param addr  ["nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"]
      */
     public setServer(addr: Array<string> | string) {
-        // this.address_list= util.isArray(addr)?<Array<NatsAddress>>addr:[<NatsAddress>addr];
+        // this.address_list= Array.isArray(addr)?<Array<NatsAddress>>addr:[<NatsAddress>addr];
         this.address_list = [];
-        (util.isArray(addr) ? <Array<string>>addr : [String(addr)]).forEach(e => {
+        (Array.isArray(addr) ? <Array<string>>addr : [String(addr)]).forEach(e => {
             this.address_list.push(this.toAddr(e));
         });
         return this;
@@ -123,7 +128,7 @@ export class Nats extends events.EventEmitter {
     }
 
     //重连
-    public reconnect() {
+    public reconnect(sucBack?:()=>void) {
         let evt = this.re_connet_ing;
         if (evt) {
             let fail_err = new Error();
@@ -139,6 +144,7 @@ export class Nats extends events.EventEmitter {
             this.connect(8181, 50, this.autoReconnect);
             this.re_connet_ing = null;
             evt.set();
+            sucBack && sucBack();
         } catch (e) {
             this.re_connet_ing = null;
             evt["_err_"] = e;
@@ -169,7 +175,7 @@ export class Nats extends events.EventEmitter {
         tmps = shuffle(tmps);
         M:for (let i = 0; i < Math.max(1, retryNum * tmps.length); i++) {
             for (let j = 0; j < tmps.length; j++) {
-                let node = tmps[j], fail_at = "open_sock", sock = new net.Socket(), stream: Class_BufferedStream;
+                let node = tmps[j], fail_at = "open_sock", sock = new net.Socket(net.AF_INET), stream: Class_BufferedStream;
                 try {
                     sock.connect(node.host, node.port);
                     stream = new io.BufferedStream(sock);
@@ -257,20 +263,20 @@ export class Nats extends events.EventEmitter {
         let self = this, sid, subs = self.subscriptions, timeout;
         return new Promise<any>((resolve, reject) => {
             try {
-                var inbox = '_INBOX.' + nuid.next();
+                let inbox = '_INBOX.' + nuid.next();
                 sid = self.subscribe(inbox, d => {
                     resolve(d);
                 }, 1);
-                var part = subs[sid];
+                let part = subs.get(sid);
                 timeout = part.t = setTimeout(() => {
-                    delete subs[sid];
+                    subs.delete(sid);
                     reject(new Error("nats_req_timeout:" + subject));
                     self.unsubscribe(inbox);
                 }, timeoutTtl);
                 self.publish(subject, payload, inbox);
             } catch (e) {
                 if (sid) {
-                    delete subs[sid];
+                    subs.delete(sid);
                     if (timeout) {
                         clearTimeout(timeout);
                     }
@@ -298,9 +304,9 @@ export class Nats extends events.EventEmitter {
                 rsp = d;
                 evt.set();
             }, 1);
-            timeout = subs[sid].t = setTimeout(function () {
+            timeout = subs.get(sid).t = setTimeout(function () {
                 isTimeouted = true;
-                delete subs[sid];
+                subs.delete(sid);
                 evt.set();
                 try {
                     self.unsubscribe(inbox);
@@ -310,7 +316,7 @@ export class Nats extends events.EventEmitter {
             this.publish(subject, payload, inbox);
         } catch (e) {
             if (sid) {
-                delete subs[sid];
+                subs.delete(sid);
                 if (timeout) {
                     clearTimeout(timeout);
                     try {
@@ -322,7 +328,7 @@ export class Nats extends events.EventEmitter {
             throw e;
         }
         evt.wait();
-        delete subs[sid];
+        subs.delete(sid);
         clearTimeout(timeout);
         if (isTimeouted) {
             throw new Error("nats_req_timeout_" + subject);
@@ -350,12 +356,12 @@ export class Nats extends events.EventEmitter {
      */
     public subscribe(subject: string, callBack: (data: any, meta?: { subject: any, sid: string, reply?: (replyData: any) => void }) => void, limit?: number): string {
         let sid = nuid.next();
-        this.subscriptions[sid] = {
+        this.subscriptions.set(sid, {
             subject: subject,
             sid: sid,
             fn: callBack,
             num: limit > 0 ? limit : -1
-        };
+        });
         this.send(Buffer.from(`SUB ${subject} ${sid}\r\n`));
         return sid;
     }
@@ -369,7 +375,7 @@ export class Nats extends events.EventEmitter {
         let msg = arguments.length > 1 ? `UNSUB ${sid} ${quantity}\r\n` : `UNSUB ${sid}\r\n`;
         this.send(Buffer.from(msg));
         if (arguments.length < 2) {
-            delete this.subscriptions[sid];
+            this.subscriptions.delete(sid);
         }
     }
 
@@ -378,28 +384,28 @@ export class Nats extends events.EventEmitter {
      * @param subject 主题
      */
     public unsubscribeSubject(subject: string) {
-        Object.values(this.subscriptions).forEach(e => {
+        for(let e of this.subscriptions.values()){
             if (e.subject == subject) {
                 this.unsubscribe(e.sid);
             }
-        });
+        }
     }
 
     /**
      * 取消所有订阅
      */
     public unsubscribeAll() {
-        let vals = Object.values(this.subscriptions);
-        this.subscriptions = {};
+        let vals = this.subscriptions.values();
+        this.subscriptions = new Map<string, SubInfo>();
         if (!this.sock) {
             return;
         }
-        vals.forEach(e => {
+        for(let e of vals){
             try {
                 this.unsubscribe(e.sid);
             } catch (e) {
             }
-        });
+        }
     }
 
     /**
@@ -437,15 +443,21 @@ export class Nats extends events.EventEmitter {
 
     protected send(payload) {
         try {
+            this.send_lock.acquire();
             this.sock.send(payload);
         } catch (e) {
             this.on_lost();
             if (this.autoReconnect) {
-                if (!this.sock) this.reconnect();
-                this.sock.send(payload);
+                if (!this.sock){
+                    this.reconnect(()=>{
+                        this.send(payload);
+                    });
+                }
             } else {
                 throw e;
             }
+        } finally {
+            this.send_lock.release();
         }
     }
 
@@ -506,7 +518,7 @@ export class Nats extends events.EventEmitter {
                 } else if (line == S_PONG) {
                     coroutine.start(processPong, true);
                     continue;
-                } else if (line == S_OK) {
+                } else if (line == S_OK){
                     continue;
                 }
                 //MSG subject sid size
@@ -514,20 +526,19 @@ export class Nats extends events.EventEmitter {
                 let subject = arr[1];
                 let sid = arr[2];
                 let inbox = arr.length > 4 ? arr[3] : null;
-                let len = arr.length > 4 ? Number(arr[4]) : Number(arr[3]);
+                let len = Number(arr.pop());
                 // console.log(line, len);
-                if (len == 0) {
-                    coroutine.start(processMsg, subject, sid, EMPTY_BUF, inbox);
-                    continue;
+                let data = EMPTY_BUF;
+                if (len>0) {
+                    data = stream.read(len);
+                    // console.log(data, String(data))
+                    if (this.is_read_fail(data)) {
+                        // console.log("read_fail:1",line,data);
+                        break;
+                    }
                 }
-                let data = stream.read(len);
-                // console.log(data, String(data))
-                if (this.is_read_fail(data)) {
-                    // console.log("read_fail:1",line,data);
-                    break;
-                }
-                stream.read(2);
                 coroutine.start(processMsg, subject, sid, data, inbox);
+                stream.read(2);
             } catch (e) {
                 console.error("nats|read2pass", e);
                 break;
@@ -560,8 +571,17 @@ export class Nats extends events.EventEmitter {
     }
 
     protected process_pong(ret: boolean) {
-        if (this.pingBacks.length > 0) {
-            var a = this.pingBacks.concat();
+        if (ret) {
+            let cb = this.pingBacks.shift();
+            if(cb){
+                try {
+                    cb(ret);
+                } catch (e) {
+                    console.error("nats|process_pong", e)
+                }
+            }
+        }else{
+            let a = this.pingBacks.concat();
             this.pingBacks.length = 0;
             try {
                 a.forEach(f => {
@@ -574,7 +594,7 @@ export class Nats extends events.EventEmitter {
     }
 
     protected encode(payload: any): Class_Buffer {
-        if (util.isBuffer(payload)) {
+        if (Buffer.isBuffer(payload)) {
             return payload;
         }
         return Buffer.from(String(payload));
@@ -587,32 +607,22 @@ export class Nats extends events.EventEmitter {
 
 export class NatsJson extends Nats {
     protected encode(payload: any): Class_Buffer {
-        var pb: Class_Buffer;
-        if (util.isBuffer(payload)) {
-            pb = <Class_Buffer>payload;
-            pb.writeUInt8(0);
-        } else {
-            pb = Buffer.from(JSON.stringify(payload));
-        }
-        return pb;
+        return Buffer.from(JSON.stringify(payload));
     }
 
     protected decode(data: Class_Buffer): any {
-        if (data.readUInt8(data.length - 1) == 0) {
-            return data.slice(0, data.length - 1);
-        }
         return JSON.parse(data.toString());
     }
 }
 
 export class NatsMsgpack extends Nats {
     protected encode(payload: any): Class_Buffer {
-        return require('msgpack').encode(payload);
+        return msgpack.encode(payload);
     }
 
     protected decode(data: Class_Buffer): any {
         try {
-            return require('msgpack').decode(data);
+            return msgpack.decode(data);
         } catch (e) {
             console.error("nats|msgpack_decode_err", e.message);
             return data.toString();
