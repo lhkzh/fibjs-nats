@@ -1,6 +1,6 @@
 {
-  "name": "pf",
-  "version": "1.0.1",
+  "name": "fibjs-nats",
+  "version": "1.0.5",
   "description": "nats of fibjs",
   "main": "./dist/index.js",
   "types": "./@types/index.d.ts",
