@@ -1,5 +1,7 @@
 /// <reference types="@fibjs/types" />
 import * as events from "events";
+export declare const VERSION = "1.1.0";
+export declare const LANG = "fibjs";
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
  * 协议参考
@@ -7,46 +9,34 @@ import * as events from "events";
  * https://github.com/repejota/phpnats
  */
 export declare class Nats extends events.EventEmitter {
+    private _serverList;
+    private _at;
+    private _cfg;
+    private _connection;
+    private _info;
     private subscriptions;
-    private address_list;
-    private default_server;
-    private sock;
-    private send_lock;
-    private stream;
-    private serverInfo;
-    private autoReconnect;
-    private re_connet_ing;
-    private pingBacks;
-    connectOption: {
-        name?: string;
-        noEcho?: boolean;
-    };
+    private _pingBacks;
+    private _okWaits;
+    private _reConnetIng;
     constructor();
     getInfo(): NatsServerInfo;
-    private toAddr;
-    static make(cfg?: {
-        json?: boolean;
-        msgpack?: boolean;
-        name?: string;
-        noEcho?: boolean;
-        url?: string | NatsAddress;
-        urls?: string[] | NatsAddress[];
-    }, retryConnectNum?: number): Nats;
     /**
      * 配置连接地址
      * @param addr  ["nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"]
      */
-    setServer(addr: Array<string> | string): this;
+    setServer(addr: Array<string | NatsAddress> | string | NatsAddress): this;
     addServer(addr: string | NatsAddress): this;
-    removeServer(addr: string): boolean;
-    reconnect(sucBack?: () => void): void;
+    removeServer(addr: string | NatsAddress): boolean;
+    reconnect(): void;
+    private _do_connect;
+    private _shuffle_server_list;
     /**
      * 建立连接
      * @param retryNum
      * @param retryDelay
      * @param autoReconnect
      */
-    connect(retryNum?: number, retryDelay?: number, autoReconnect?: boolean): this;
+    connect(): this;
     /**
      * 检测是否能连通
      */
@@ -106,22 +96,22 @@ export declare class Nats extends events.EventEmitter {
      */
     publish(subject: string, payload?: any, inbox?: string): void;
     protected send(payload: any): void;
-    protected process_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string): void;
-    private read2pass;
-    private is_read_fail;
-    private on_lost;
-    protected process_pong(ret: boolean): void;
+    protected _on_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string): void;
+    private _on_connect;
+    private _on_ok;
+    private _on_lost;
+    protected _on_pong(is_lost: boolean): void;
     protected encode(payload: any): Class_Buffer;
     protected decode(data: Class_Buffer): any;
+    static make(cfg?: string | NatsAddress | NatsConnectCfg): Nats;
 }
-export declare class NatsJson extends Nats {
-    protected encode(payload: any): Class_Buffer;
-    protected decode(data: Class_Buffer): any;
-}
-export declare class NatsMsgpack extends Nats {
-    protected encode(payload: any): Class_Buffer;
-    protected decode(data: Class_Buffer): any;
-}
+export declare const NatsEvent: Readonly<{
+    OnCnnect: string;
+    OnIoError: string;
+    OnLost: string;
+    OnReconnectFail: string;
+    OnReCnnect: string;
+}>;
 declare type SubFn = (data: any, meta?: {
     subject: any;
     sid: string;
@@ -143,10 +133,38 @@ export interface NatsServerInfo {
  * 服务器地址配置
  */
 export interface NatsAddress {
-    host: string;
-    port: number;
+    url?: string;
     user?: string;
     pass?: string;
-    auth_token?: string;
+    token?: string;
 }
+export interface NatsConfig {
+    timeout?: number;
+    pingInterval?: number;
+    maxPingOut?: number;
+    reconnect?: boolean;
+    reconnectWait?: number;
+    noRandomize?: boolean;
+    maxReconnectAttempts?: number;
+    name?: string;
+    noEcho?: boolean;
+    serizalize?: NatsSerizalize;
+    json?: boolean;
+    msgpack?: boolean;
+}
+declare type NatsConnectCfg_Mult = NatsConfig & {
+    servers?: Array<string | NatsAddress>;
+};
+declare type NatsConnectCfg_One = NatsConfig & {
+    url?: string | NatsAddress;
+};
+declare type NatsConnectCfg = NatsConnectCfg_Mult | NatsConnectCfg_One;
+export declare type NatsSerizalize = {
+    encode: (payload: any) => Class_Buffer;
+    decode: (buf: Class_Buffer) => any;
+};
+export declare const NatsSerizalize_Json: NatsSerizalize;
+export declare const NatsSerizalize_Msgpack: NatsSerizalize;
+export declare const NatsSerizalize_Str: NatsSerizalize;
+export declare const NatsSerizalize_Buf: NatsSerizalize;
 export {};

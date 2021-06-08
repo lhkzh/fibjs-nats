@@ -1,12 +1,20 @@
 /// <reference types="@fibjs/types" />
-import * as net from "net";
-import * as io from "io";
+
 import * as coroutine from "coroutine";
 import * as util from "util";
-import * as url from "url";
 import * as events from "events";
+import * as net from "net";
+import * as ws from "ws";
+import * as ssl from "ssl";
 import {nuid} from "./Nuid";
 import {msgpack} from "encoding";
+import {parse} from "url";
+import * as queryString from "querystring";
+import {EventEmitter} from "events";
+import { BufferedStream,MemoryStream } from "io";
+
+export const VERSION = "1.1.0";
+export const LANG = "fibjs";
 
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
@@ -15,109 +23,64 @@ import {msgpack} from "encoding";
  * https://github.com/repejota/phpnats
  */
 export class Nats extends events.EventEmitter {
+    private _serverList: Array<NatsAddress> = [];
+    private _at: NatsAddress;
+    private _cfg: NatsConfig;
+    private _connection: NatsConnection;
+
+    private _info: NatsServerInfo;
+
     private subscriptions: Map<string, SubInfo> = new Map<string, SubInfo>();
-    private address_list: Array<NatsAddress> = [];
-    private default_server: NatsAddress = {host: "127.0.0.1", port: 4222};
-    private sock: Class_Socket;
-    private send_lock:Class_Lock = new coroutine.Lock();
-    private stream: Class_BufferedStream;
-    private serverInfo: NatsServerInfo;
-    private autoReconnect: boolean;
-    private re_connet_ing: Class_Event;
-    private pingBacks: Array<(suc: boolean) => void> = [];
-    //name=客户端连接名字, noEcho=是否关闭连接自己发出去的消息-回显订阅
-    public connectOption: { name?: string, noEcho?: boolean } = {};
+    private _pingBacks: Array<(suc: boolean) => void> = [];
+    private _okWaits: Array<Class_Event> = [];
+
+    // private autoReconnect: boolean;
+    private _reConnetIng: Class_Event;
 
     constructor() {
         super();
+        this._serverList = [];
     }
 
     public getInfo() {
-        return this.serverInfo;
-    }
-
-    private toAddr(addr: string | NatsAddress) {
-        if (!util.isString(addr)) {
-            return <NatsAddress>addr;
-        }
-        let info = url.parse(String(addr));
-        let itf: NatsAddress = {host: info.hostname, port: info.port.length > 0 ? parseInt(info.port) : 4222};
-        if (info.username.length > 0) {
-            if (info.password == null || info.password.length < 1) {
-                itf.auth_token = info.auth;
-            } else {
-                itf.user = info.username;
-                itf.pass = info.password;
-            }
-        }
-        return itf;
-    }
-
-    //构建一个-并主动链接
-    public static make(cfg?: { json?: boolean, msgpack?: boolean, name?: string, noEcho?: boolean, url?: string | NatsAddress, urls?: string[] | NatsAddress[] }, retryConnectNum=3) {
-        let imp: Nats;
-        if (cfg) {
-            if (cfg.json) {
-                imp = new NatsJson();
-            } else if (cfg.msgpack) {
-                imp = new NatsMsgpack();
-            } else {
-                imp = new Nats();
-            }
-            if (cfg.url) {
-                imp.addServer(cfg.url);
-            }
-            if (cfg.urls) {
-                cfg.urls.forEach(u => {
-                    imp.addServer(u);
-                });
-            }
-            if (cfg.name) {
-                imp.connectOption.name = cfg.name;
-            }
-            if (cfg.noEcho) {
-                imp.connectOption.noEcho = cfg.noEcho;
-            }
-        } else {
-            imp = new Nats();
-        }
-        return imp.connect(retryConnectNum);
+        return this._info;
     }
 
     /**
      * 配置连接地址
      * @param addr  ["nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"]
      */
-    public setServer(addr: Array<string> | string) {
-        // this.address_list= Array.isArray(addr)?<Array<NatsAddress>>addr:[<NatsAddress>addr];
-        this.address_list = [];
-        (Array.isArray(addr) ? <Array<string>>addr : [String(addr)]).forEach(e => {
-            this.address_list.push(this.toAddr(e));
-        });
+    public setServer(addr: Array<string|NatsAddress> | string | NatsAddress) {
+        this._serverList = [];
+        if(Array.isArray(addr)){
+            (<Array<string|NatsAddress>>addr).forEach(e=>{
+                this.addServer(e);
+            });
+        }else {
+            this.addServer(<string>addr);
+        }
         return this;
     }
 
     //添加服务地址
     public addServer(addr: string | NatsAddress) {
-        let itf = this.toAddr(addr);
-        let target = JSON.stringify(itf);
-        let had = this.address_list.some(e => {
-            return JSON.stringify(e) == target;
+        let natAddr = util.isString(addr) ? convertToAddress(<string>addr):<NatsAddress>addr;
+        let jsonAddr = JSON.stringify(natAddr);
+        let had = this._serverList.some(e => {
+            return JSON.stringify(e) == jsonAddr;
         });
         if (had) {
             return;
         }
-        this.address_list.push(itf);
+        this._serverList.push(natAddr);
         return this;
     }
 
     //移除一个节点服务
-    public removeServer(addr: string) {
-        let itf = this.toAddr(addr);
-        this.address_list = this.address_list.filter(e => {
-            return e.host == itf.host && e.port == itf.port;
-        });
-        if (this.serverInfo && this.serverInfo.host == itf.host && this.serverInfo.port == itf.port) {
+    public removeServer(addr: string|NatsAddress) {
+        let natAddr = util.isString(addr) ? convertToAddress(<string>addr):<NatsAddress>addr;
+        this._serverList = this._serverList.filter(e=>e.url!=natAddr.url);
+        if (this._connection && this._connection.address.url==natAddr.url) {
             this.close();
             this.reconnect();
         }
@@ -125,8 +88,8 @@ export class Nats extends events.EventEmitter {
     }
 
     //重连
-    public reconnect(sucBack?:()=>void) {
-        let evt = this.re_connet_ing;
+    public reconnect() {
+        let evt = this._reConnetIng;
         if (evt) {
             let fail_err = new Error();
             evt.wait();
@@ -137,17 +100,64 @@ export class Nats extends events.EventEmitter {
             return;
         }
         try {
-            evt = this.re_connet_ing = new coroutine.Event();
-            this.connect(8181, 50, this.autoReconnect);
-            this.re_connet_ing = null;
+            evt = this._reConnetIng = new coroutine.Event();
+            this.close();
+            this._do_connect(true);
+            this._reConnetIng = null;
             evt.set();
-            sucBack && sucBack();
         } catch (e) {
-            this.re_connet_ing = null;
+            this._reConnetIng = null;
             evt["_err_"] = e;
             evt.set();
             throw e;
         }
+    }
+
+    private _do_connect(isReconnect:boolean){
+        let tmps = this._shuffle_server_list();
+        let retryNum = this._cfg.maxReconnectAttempts > 0?this._cfg.maxReconnectAttempts:1;
+        let suc_connection:NatsConnection;
+        M:for (let i = 0; i < retryNum*tmps.length; i++) {
+            for (let j = 0; j < tmps.length; j++) {
+                let address = tmps[j];
+                try {
+                    let connection = address.url.startsWith("ws") ? NatsWebsocket.connect(address, this._cfg):NatsSocket.connect(address, this._cfg);
+                    if(connection){
+                        suc_connection = connection;
+                        break M;
+                    }
+                } catch (e) {
+                    console.error('Nats|open_fail', address.url, e.message);
+                }
+                if(this._cfg.reconnectWait>0){
+                    if(this._cfg.noRandomize){
+                        coroutine.sleep(this._cfg.reconnectWait);
+                    }else{
+                        coroutine.sleep(this._cfg.reconnectWait+Math.ceil(Math.random()*50));
+                    }
+                }
+            }
+        }
+        if (suc_connection == null) {
+            this.emit(NatsEvent.OnIoError, "connect_nats_fail", JSON.stringify(this._serverList));
+            let err = new Error("connect_nats_fail");
+            console.log("nats|connect", err.message);
+            throw err;
+        }else{
+            this._on_connect(suc_connection, isReconnect);
+            return this;
+        }
+    }
+    private _shuffle_server_list(){
+        let a = this._serverList.concat();
+        if(a.length<1){
+            a = [{...DefaultAddress}];
+        }
+        for (let i = a.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [a[i], a[j]] = [a[j], a[i]];
+        }
+        return a;
     }
 
     /**
@@ -156,76 +166,11 @@ export class Nats extends events.EventEmitter {
      * @param retryDelay
      * @param autoReconnect
      */
-    public connect(retryNum: number = 3, retryDelay: number = 60, autoReconnect: boolean = true) {
-        let last = this.sock;
-        if (last != null) {
-            try {
-                last.close();
-            } catch (e) {
-            }
-            this.sock = null;
-            this.stream = null;
-            this.serverInfo = null;
+    public connect() {
+        if(this._connection){
+            return this;
         }
-        this.autoReconnect = autoReconnect;
-        let tmps = this.address_list && this.address_list.length > 0 ? this.address_list.slice(0) : [this.default_server];
-        tmps = shuffle(tmps);
-        M:for (let i = 0; i < Math.max(1, retryNum * tmps.length); i++) {
-            for (let j = 0; j < tmps.length; j++) {
-                let node = tmps[j], fail_at = "open_sock", sock = new net.Socket(net.AF_INET), stream: Class_BufferedStream;
-                try {
-                    sock.connect(node.host, node.port);
-                    stream = new io.BufferedStream(sock);
-                    stream.EOL = "\r\n";
-                    let info = stream.readLine(360);
-                    if (info == null) {
-                        continue;
-                    }
-                    let opt: any = {
-                        verbose: false,
-                        pedantic: false,
-                        ssl_required: false,
-                        name: this.connectOption.name || "fibjs-nats",
-                        lang: "fibjs",
-                        version: "1.0.0"
-                    }
-                    if (this.connectOption.noEcho) {
-                        opt.echo = false;
-                    }
-                    if (node.user && node.pass) {
-                        opt.user = node.user;
-                        opt.pass = node.pass;
-                    } else if (node.auth_token) {
-                        opt.auth_token = node.auth_token;
-                    }
-                    fail_at = "auth_connect";
-                    sock.send(Buffer.from(`CONNECT ${JSON.stringify(opt)}\r\n`));
-                    sock.send(B_PING_EOL);
-                    if (stream.readLine(8) != null) {
-                        this.sock = sock;
-                        this.stream = stream;
-                        this.serverInfo = JSON.parse(info.toString().split(" ")[1]);
-                        break M;
-                    } else {
-                        sock.close();
-                    }
-                } catch (e) {
-                    sock.close();
-                    console.error('Nats|open_fail', node.host + ':' + node.port, fail_at);
-                }
-            }
-            if (retryDelay > 0) {
-                coroutine.sleep(retryDelay);
-            }
-        }
-        if (this.sock == null) {
-            this.emit("error", "connect_nats_fail", JSON.stringify(this.address_list));
-            let err = new Error("connect_nats_fail");
-            console.log("nats|connect", err.message)
-            throw err;
-        }
-        coroutine.start(this.read2pass.bind(this));
-        coroutine.sleep();
+        this._do_connect(false);
         return this;
     }
 
@@ -233,14 +178,14 @@ export class Nats extends events.EventEmitter {
      * 检测是否能连通
      */
     public ping(): boolean {
-        if (!this.sock) {
+        if (!this._connection) {
             return false;
         }
         try {
             this.send(B_PING_EOL);
             let evt = new coroutine.Event(false),
                 ret: boolean;
-            this.pingBacks.push(suc => {
+            this._pingBacks.push(suc => {
                 ret = suc;
                 evt.set();
             });
@@ -394,7 +339,7 @@ export class Nats extends events.EventEmitter {
     public unsubscribeAll() {
         let vals = this.subscriptions.values();
         this.subscriptions = new Map<string, SubInfo>();
-        if (!this.sock) {
+        if (!this._connection) {
             return;
         }
         for(let e of vals){
@@ -409,13 +354,15 @@ export class Nats extends events.EventEmitter {
      * 关闭链接
      */
     public close() {
-        let last = this.autoReconnect;
-        this.autoReconnect = false;
-        if (this.sock) {
-            this.sock.close();
+        let flag = this._cfg.reconnect;
+        this._cfg.reconnect = false;
+        let last = this._connection;
+        if (last) {
+            this._connection = null;
+            last.close();
         }
-        coroutine.sleep();
-        this.autoReconnect = last;
+        this._cfg.reconnect = flag;
+        this._on_pong(true);
     }
 
     /**
@@ -440,25 +387,19 @@ export class Nats extends events.EventEmitter {
 
     protected send(payload) {
         try {
-            this.send_lock.acquire();
-            this.sock.send(payload);
-            this.send_lock.release();
+            this._connection.send(payload);
         } catch (e) {
-            this.send_lock.release();
-            this.on_lost();
-            if (this.autoReconnect) {
-                if (!this.sock){
-                    this.reconnect(()=>{
-                        this.send(payload);
-                    });
-                }
+            if (this._cfg.reconnect) {
+                this.once(NatsEvent.OnReCnnect, ()=>{
+                    this.send(payload);
+                });
             } else {
                 throw e;
             }
         }
     }
 
-    protected process_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string) {
+    protected _on_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string) {
         let sop = this.subscriptions.get(sid);
         try {
             let data = payload.length > 0 ? this.decode(payload) : null;
@@ -487,177 +428,127 @@ export class Nats extends events.EventEmitter {
             }
             this.emit(subject, data);
         } catch (e) {
-            console.error("nats|process", e);
+            console.error("nats|on_msg", e);
         }
     }
 
-    private read2pass() {
-        const sock = this.sock;
-        const stream = this.stream;
-        const processMsg = this.process_msg.bind(this);
-        const processPong = this.process_pong.bind(this);
-        try {
-            for(let e of this.subscriptions.values()){
-                sock.send(Buffer.from(`SUB ${e.subject} ${e.sid}\r\n`));
-            }
-        } catch (e) {
+    private _on_connect(connection:NatsConnection, isReconnected){
+        this._connection = connection;
+        this._at = connection.address;
+        connection.on("pong", this._on_pong.bind(this));
+        connection.on("msg", this._on_msg.bind(this));
+        connection.on("close", this._on_lost.bind(this));
+        connection.on("ok", this._on_ok.bind(this));
+        for(let e of this.subscriptions.values()){
+            connection.send(Buffer.from(`SUB ${e.subject} ${e.sid}\r\n`));
         }
-        while (sock == this.sock) {
-            try {
-                let line = stream.readLine();
-                if (this.is_read_fail(line)) {
-                    // console.log("read_fail:0",line,data);
-                    break;
+        coroutine.start(()=>{
+            if(this._connection==connection){
+                this.emit(NatsEvent.OnCnnect);
+                if(isReconnected){
+                    this.emit(NatsEvent.OnReCnnect);
                 }
-                if (line == S_PING) {
-                    this.send(B_PONG_EOL);
-                    continue;
-                } else if (line == S_PONG) {
-                    coroutine.start(processPong, true);
-                    continue;
-                } else if (line == S_OK){
-                    continue;
-                }
-                //MSG subject sid size
-                let arr = line.split(" "),
-                    subject:string = arr[1],
-                    sid:string = arr[2],
-                    inbox:string,
-                    len:number,
-                    data = EMPTY_BUF;
-                if(arr.length>4){
-                    inbox = arr[3];
-                    len = Number(arr[4]);
-                }else{
-                    len = Number(arr[3]);
-                }
-                // console.log(line, len);
-                if (len>0) {
-                    data = stream.read(len);
-                    // console.log(data, String(data))
-                    if (this.is_read_fail(data)) {
-                        // console.log("read_fail:1",line,data);
-                        break;
-                    }
-                }
-                coroutine.start(processMsg, subject, sid, data, inbox);
-                stream.read(2);
-            } catch (e) {
-                console.error("nats|read2pass", e);
-                break;
             }
-        }
+        });
     }
+    private _on_ok(err:boolean){
+        if(err){
 
-    private is_read_fail(d) {
-        if (d == null) {
-            this.on_lost();
-            return true;
-        }
-        return false;
-    }
-
-    private on_lost() {
-        if (this.sock != null) {
-            try {
-                this.sock.close();
-            } catch (e) {
-            }
-        }
-        this.sock = null;
-        console.error("nats|on_lost => %s", JSON.stringify(this.serverInfo));
-        this.emit("lost");
-        if (this.autoReconnect) {
-            coroutine.start(this.reconnect.bind(this));
-        }
-        this.process_pong(false);
-    }
-
-    protected process_pong(ret: boolean) {
-        if (ret) {
-            let cb = this.pingBacks.shift();
-            if(cb){
-                try {
-                    cb(ret);
-                } catch (e) {
-                    console.error("nats|process_pong", e)
-                }
-            }
         }else{
-            let a = this.pingBacks.concat();
-            this.pingBacks.length = 0;
+
+        }
+    }
+    private _on_lost() {
+        let last = this._connection;
+        this.close();
+        if (last!=null) {
+            console.error("nats|on_lost => %s", JSON.stringify(this._at));
+            this.emit(NatsEvent.OnLost);
+            if(this._cfg.reconnect){
+                this.reconnect();
+            }
+        }
+    }
+
+    protected _on_pong(is_lost: boolean) {
+        if (is_lost) {
+            let a = this._pingBacks;
+            this._pingBacks = [];
             try {
                 a.forEach(f => {
-                    f(ret);
+                    f(false);
                 });
             } catch (e) {
-                console.error("nats|process_pong", e)
+                console.error("nats|on_pong", e)
+            }
+        }else{
+            let cb = this._pingBacks.shift();
+            if(cb){
+                try {
+                    cb(true);
+                } catch (e) {
+                    console.error("nats|on_pong", e)
+                }
             }
         }
     }
 
     protected encode(payload: any): Class_Buffer {
-        if (Buffer.isBuffer(payload)) {
-            return payload;
+        return this._cfg.serizalize.encode(payload);
+    }
+
+    protected decode(data: Class_Buffer): any {
+        return this._cfg.serizalize.decode(data);
+    }
+
+
+    //构建一个-并主动链接
+    public static make(cfg?: string|NatsAddress|NatsConnectCfg) {
+        let imp = new Nats();
+        let conf:NatsConfig;
+        if(typeof(cfg)=="string"){
+            imp.addServer(cfg);
+        }else if((<NatsConnectCfg_Mult>cfg).servers){
+            (<NatsConnectCfg_Mult>cfg).servers.forEach(e=>{
+                imp.addServer(e);
+            });
+            conf = {...DefaultConfig, ...cfg};
+            delete conf["servers"];
+        }else if(typeof((<NatsConnectCfg_One>cfg).url)!="string" || Object.values(cfg).some(e=>typeof(e)!="string")){
+            imp.addServer((<NatsConnectCfg_One>cfg).url);
+            conf = {...DefaultConfig, ...cfg};
+            delete conf["url"];
+        }else{
+            imp.addServer(<NatsAddress>cfg);
         }
-        return Buffer.from(String(payload));
-    }
-
-    protected decode(data: Class_Buffer): any {
-        return data;
-    }
-}
-
-export class NatsJson extends Nats {
-    protected encode(payload: any): Class_Buffer {
-        return Buffer.from(JSON.stringify(payload));
-    }
-
-    protected decode(data: Class_Buffer): any {
-        return JSON.parse(data.toString());
-    }
-}
-
-export class NatsMsgpack extends Nats {
-    protected encode(payload: any): Class_Buffer {
-        return msgpack.encode(payload);
-    }
-
-    protected decode(data: Class_Buffer): any {
-        try {
-            return msgpack.decode(data);
-        } catch (e) {
-            console.error("nats|msgpack_decode_err", e.message);
-            return data.toString();
+        imp._cfg = conf || {...DefaultConfig};
+        if(imp._cfg.serizalize==null){
+            if(imp._cfg["json"]){
+                conf.serizalize = NatsSerizalize_Json;
+            }else if(imp._cfg["msgpack"]){
+                conf.serizalize = NatsSerizalize_Msgpack;
+            }else{
+                imp._cfg.serizalize = NatsSerizalize_Buf;
+            }
         }
+        return imp._do_connect(false);
     }
 }
 
-const EMPTY_BUF = new Buffer([]);
-const B_SPACE = Buffer.from(" ");
-const B_EOL = Buffer.from("\r\n");
-const B_PUB = Buffer.from("PUB ");
-const B_PUBLISH_EMPTY = Buffer.from(" 0\r\n\r\n");
-const B_PING = Buffer.from("PING");
-const B_PING_EOL = Buffer.from("PING\r\n");
-const B_PONG = Buffer.from("PONG");
-const B_PONG_EOL = Buffer.from("PONG\r\n");
-const B_OK = Buffer.from("+OK");
-const B_ERR = Buffer.from("-ERR");
-
-const S_PING = "PING";
-const S_PING_EOL = Buffer.from("PING\r\n");
-const S_PONG = "PONG";
-const S_PONG_EOL = "PONG\r\n";
-const S_OK = "+OK";
+export const NatsEvent=Object.freeze({
+    OnCnnect:"connect",
+    OnIoError:"error",
+    OnLost:"lost",
+    OnReconnectFail:"on_reconnect_fail",
+    OnReCnnect:"reconnect"
+});
 
 //侦听器-回调
 type SubFn = (data: any, meta?: { subject: any, sid: string, reply?: (replyData: any) => void }) => void;
 //侦听器-结构描述
 type SubInfo = { subject: string, sid: string, fn: SubFn, num: number, t?: Class_Timer};
 
-//{"server_id":"NDKOPUBNP4IRWW2UGWBNJ2VNNCWNBO3BTJXBDJ7JIA77ZVENDQF6U7QC","version":"2.0.4","proto":1,"git_commit":"c8ca58e","go":"go1.12.8","host":"0.0.0.0","port":4222,"max_payload":1048576,"cli
-// ent_id":20}
+//{"server_id":"NDKOPUBNP4IRWW2UGWBNJ2VNNCWNBO3BTJXBDJ7JIA77ZVENDQF6U7QC","version":"2.0.4","proto":1,"git_commit":"c8ca58e","go":"go1.12.8","host":"0.0.0.0","port":4222,"max_payload":1048576,"client_id":20}
 /**
  * 服务器信息描述
  */
@@ -674,21 +565,425 @@ export interface NatsServerInfo {
  * 服务器地址配置
  */
 export interface NatsAddress {
-    host: string;
-    port: number;
-    user?: string;
-    pass?: string;
-    auth_token?: string
+    url?:string
+    //授权user
+    user?:string,
+    //授权pass
+    pass?:string,
+    //授权token
+    token?:string,
+}
+export interface NatsConfig {
+    //socket链接超时时间ms
+    timeout?:number,
+    //计时进行ping服务器
+    pingInterval?:number,
+    maxPingOut?:number,
+    //是否开启重连，默认true
+    reconnect?:boolean,
+    //重连暂停时间
+    reconnectWait?:number,
+    //是否禁用-重连时间随机
+    noRandomize?:boolean,
+    //重连最大次数
+    maxReconnectAttempts?:number,
+
+    //name=客户端连接名字,
+    name?:string,
+    //是否关闭连接自己发出去的消息-回显订阅
+    noEcho?:boolean,
+
+    //序列化方式
+    serizalize?:NatsSerizalize,
+    json?:boolean,
+    msgpack?:boolean
+}
+type NatsConnectCfg_Mult = NatsConfig&{servers?:Array<string|NatsAddress>};
+type NatsConnectCfg_One = NatsConfig&{url?:string|NatsAddress};
+type NatsConnectCfg = NatsConnectCfg_Mult | NatsConnectCfg_One;
+
+export type NatsSerizalize = {encode:(payload: any)=> Class_Buffer, decode:(buf:Class_Buffer)=>any};
+export const NatsSerizalize_Json:NatsSerizalize = Object.freeze({encode:(payload:any)=>Buffer.from(JSON.stringify(payload)), decode:(buf:Class_Buffer)=>{ try{
+        return JSON.parse(buf.toString())
+    }catch (e) {
+        console.error("["+buf.toString()+"]",e.toString());
+        throw e;
+    }  }});
+export const NatsSerizalize_Msgpack:NatsSerizalize = Object.freeze({encode:(payload:any)=>msgpack.encode(payload), decode:(buf:Class_Buffer)=>msgpack.decode(buf)});
+export const NatsSerizalize_Str:NatsSerizalize = Object.freeze({encode:(payload:any)=>Buffer.isBuffer(payload)?payload:Buffer.from(String(payload)), decode:(buf:Class_Buffer)=>buf.toString()});
+export const NatsSerizalize_Buf:NatsSerizalize = Object.freeze({encode:(payload:any)=>Buffer.isBuffer(payload)?payload:Buffer.from(String(payload)), decode:(buf:Class_Buffer)=>buf});
+
+const DefaultAddress:NatsAddress = {url:"nats://localhost:4222"};
+const DefaultConfig:NatsConfig = {timeout:3000, reconnect:true, reconnectWait:250, maxReconnectAttempts:86400, name:"fibjs-nats", noEcho:true};
+
+abstract class NatsConnection extends EventEmitter{
+    protected _state:number;
+    protected _pingTimer:Class_Timer;
+    protected _pingIng:number;
+    constructor(protected _cfg:NatsConfig, protected _addr:NatsAddress, protected _info:NatsServerInfo) {
+        super();
+        if(this._cfg.pingInterval>0 && this._cfg.maxPingOut>0){
+            this._pingIng = 0;
+            this._do_ping();
+        }
+    }
+    private _do_ping(){
+        if(this._pingIng>this._cfg.maxPingOut){
+            if(this._state==1){
+                this._on_lost("maxPingOut");
+            }
+            return;
+        }
+        this._pingIng++;
+        this._pingTimer = setTimeout(this._do_ping.bind(this), this._cfg.pingInterval);
+        this.once("pong", ()=>{
+            this._pingIng=0;
+            clearTimeout(this._pingTimer);
+        });
+        try{
+            this.send(B_PING_EOL);
+        }catch (e) {
+            clearTimeout(this._pingTimer);
+        }
+    }
+    public get address():NatsAddress{
+        return this._addr;
+    }
+    public get info():NatsServerInfo{
+        return this._info;
+    }
+    protected fire(evt:string, ...args){
+        coroutine.start(()=>{
+            try{
+                this.emit(evt, ...args);
+            }catch (e) {
+                console.error("process_nats:"+evt,e);
+            }
+        });
+    }
+    abstract send(payload:Class_Buffer):void;
+
+    protected _fn_close(){
+
+    }
+
+    protected _on_lost(reason:string=""){
+        if(this._state==1){
+            this._state = 3;
+            try{
+                this._fn_close();
+            }catch (e) {
+            }
+            this.emit("close", {type:"close",code:888,reason:reason});
+        }
+    }
+    public close(){
+        this._on_lost("close");
+        this.eventNames().forEach(e=>{
+            this.off(e);
+        })
+    }
+}
+class NatsSocket extends NatsConnection{
+    private _lock:Class_Lock;
+    private _reader:Class_Fiber;
+    constructor(private _sock:Class_Socket, private _stream:Class_BufferedStream, _cfg:NatsConfig, _addr:NatsAddress, _info:NatsServerInfo) {
+        super(_cfg, _addr, _info);
+        _sock.timeout = 0;
+        this._lock = new coroutine.Lock();
+        this._state = 1;
+        this._reader = coroutine.start(this._read.bind(this));
+    }
+    private _read(){
+        let stream = this._stream;
+        let is_fail = (s:Class_Buffer|string)=>s===null;
+        while(this._state==1){
+            try {
+                let line = stream.readLine();
+                if (is_fail(line)) {
+                    // console.log("read_fail:0",line,data);
+                    break;
+                }
+                if (line == S_PING) {
+                    this.send(B_PONG_EOL);
+                } else if (line == S_PONG) {
+                    this.fire("pong");
+                } else if (line == S_OK){
+                    this.fire("ok");
+                } else{
+                    //MSG subject sid size
+                    let arr = line.split(" "),
+                        subject:string = arr[1],
+                        sid:string = arr[2],
+                        inbox:string,
+                        len:number,
+                        data = EMPTY_BUF;
+                    if(arr.length>4){
+                        inbox = arr[3];
+                        len = Number(arr[4]);
+                    }else{
+                        len = Number(arr[3]);
+                    }
+                    // console.log(line, len);
+                    if (len>0) {
+                        data = stream.read(len);
+                        // console.log(data, String(data))
+                        if (is_fail(data)) {
+                            // console.log("read_fail:1",line,data);
+                            break;
+                        }
+                    }
+                    stream.read(2);
+                    this.fire("msg",subject, sid, data,inbox);
+                }
+            } catch (e) {
+                console.error("nats|reading", e);
+                this._on_lost(e.message);
+                break;
+            }
+        }
+        this._on_lost("read_lost");
+    }
+    public send(payload:Class_Buffer) {
+        try {
+            this._lock.acquire();
+            this._sock.send(payload);
+            this._lock.release();
+        } catch (e) {
+            this._lock.release();
+            this._on_lost(e.message);
+            throw e;
+        }
+    }
+    protected _fn_close(){
+        this._sock.close();
+    }
+
+    public static connect(addr:NatsAddress, cfg:NatsConfig):NatsConnection{
+        let sock = new net.Socket(net.AF_INET), stream: Class_BufferedStream;
+        let url_obj = parse(addr.url);
+        let fn_close = ()=>{
+            try{
+                sock.close();
+            }catch (e) {
+            }
+        }
+        try {
+            if(cfg.timeout>0){
+                sock.timeout = cfg.timeout;
+            }
+            sock.connect(url_obj.hostname, parseInt(url_obj.port)||4222);
+            stream = new BufferedStream(sock);
+            stream.EOL = "\r\n";
+            let info = stream.readLine(512);
+            if (info == null) {
+                fn_close();
+                throw new Error("closed_while_reading_info");
+            }
+            let opt: any = {
+                verbose: false,
+                pedantic: false,
+                ssl_required: false,
+                name: cfg.name,
+                lang: LANG,
+                version: VERSION,
+                noEcho:cfg.noEcho,
+            }
+            if (addr.user && addr.pass) {
+                opt.user = addr.user;
+                opt.pass = addr.pass;
+            } else if (addr.token) {
+                opt.auth_token = addr.token;
+            }
+            sock.send(Buffer.from(`CONNECT ${JSON.stringify(opt)}\r\n`));
+            sock.send(B_PING_EOL);
+            if (stream.readLine(6) != null) {
+                return new NatsSocket(sock, stream, cfg, addr, JSON.parse(info.toString().split(" ")[1]));
+            } else {
+                fn_close();
+                throw new Error("auth_connect_fail");
+            }
+        } catch (e) {
+            sock.close();
+            console.error('Nats|open_fail', addr.url, e.message);
+        }
+        return null;
+    }
+}
+class NatsWebsocket extends NatsConnection {
+    constructor(private _sock:Class_WebSocket, _cfg:NatsConfig, _addr:NatsAddress, _info:NatsServerInfo) {
+        super(_cfg, _addr, _info);
+        this._state = 1;
+        _sock.onclose = e=>{
+            this._on_lost(e.reason);
+        }
+        _sock.onmessage = e=>{
+            this.processMsg(<Class_Buffer>e.data)
+        };
+    }
+    private _last:Class_Buffer;
+    private processMsg(buf:Class_Buffer){
+        if(this._last){
+            this._last.append(buf);
+            buf = this._last;
+            this._last = null;
+        }
+        let idx:number,offset=0;
+        while((idx=buf.indexOf(B_EOL,offset))>-1){
+            if(idx==0){
+                offset+=2;
+                if(buf.length>offset){
+                    continue;
+                }
+                return;
+            }
+            // let line = buf.slice(0,idx).toString();
+            // buf = buf.slice(idx+2);
+            // offset = 0;
+            // if (line == S_PING) {
+            //     this.send(B_PONG_EOL);
+            // } else if (line == S_PONG) {
+            //     this.fire("pong");
+            // } else if (line == S_OK) {
+            //     this.fire("ok");
+            // } else {
+            let line = buf.slice(0,idx);
+            if (B_PING.equals(line)) {
+                buf = buf.slice(idx+2); offset = 0;
+                this.send(B_PONG_EOL);
+            } else if (B_PONG.equals(line)) {
+                buf = buf.slice(idx+2); offset = 0;
+                this.fire("pong");
+            } else if (B_OK.equals(line)) {
+                buf = buf.slice(idx+2); offset = 0;
+                this.fire("ok");
+            } else {
+                //MSG subject sid size
+                let arr = line.toString().split(" "),
+                    subject: string = arr[1],
+                    sid: string = arr[2],
+                    inbox: string,
+                    len: number,
+                    data = EMPTY_BUF;
+                if (arr.length > 4) {
+                    inbox = arr[3];
+                    len = Number(arr[4]);
+                } else {
+                    len = Number(arr[3]);
+                }
+                if(buf.length<(idx+len+2)){
+                    break;
+                }
+                data = buf.slice(idx+2,idx+2+len);
+                buf = buf.slice(idx +len + 4);offset = 0;
+                this.fire("msg", subject, sid, data, inbox);
+            }
+        }
+        if(buf.length>offset){
+            this._last = buf.slice(offset);
+        }
+    }
+    public send(payload:Class_Buffer) {
+        try {
+            this._sock.send(payload);
+        } catch (e) {
+            this._on_lost(e.message);
+            throw e;
+        }
+    }
+    protected _fn_close(){
+        this._sock.close();
+    }
+
+    public static connect(addr:NatsAddress, cfg:NatsConfig):NatsConnection{
+        if(addr.url.startsWith("wss")){
+            ssl.loadRootCerts();
+            // @ts-ignore
+            ssl.verification = ssl.VERIFY_NONE;
+        }
+        let sock = new ws.Socket(addr.url, {perMessageDeflate:false});
+        let svr_info:any;
+        let open_evt = new coroutine.Event();
+        let err_info:string = null;
+        sock.once("open",e=>{
+            sock.off("error");
+            open_evt.set();
+            sock.once("message", e=>{
+                svr_info = JSON.parse(e.data.toString().replace("INFO ","").trim());
+                open_evt.set();
+            });
+            sock.once("close",e=>{
+                err_info = "closed_while_reading_info";
+                open_evt.set();
+            });
+        });
+        sock.once("error",e=>{
+            err_info = e&&e.reason?e.reason:"io_error";
+            open_evt.set();
+        });
+        open_evt.wait();
+        if (!err_info) {
+            if(!svr_info){
+                open_evt.clear();
+                open_evt.wait();
+            }
+        }
+        if(!svr_info){
+            sock.close();
+            console.error('Nats|open_fail', addr.url, err_info);
+            return null;
+        }
+        sock.off("error");
+        sock.off("message");
+        sock.off("close");
+        return new NatsWebsocket(sock, cfg, addr, svr_info);
+    }
 }
 
-/**
- * 打乱数组
- * @hidden
- */
-function shuffle<T>(a: T[]): T[] {
-    for (let i = a.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [a[i], a[j]] = [a[j], a[i]];
+function convertToAddress(uri:string) {
+    let obj = parse(uri);
+    let itf: NatsAddress = {...DefaultAddress,url:String(uri)};
+    if(obj.query){
+        let query = queryString.parse(obj.query);
+        if(query.first("user") && query.first("pass")){
+            itf.user = query.first("user");
+            itf.pass = query.first("pass");
+        }
+        if(query.first("token")){
+            itf.token = query.first("token");
+        }
     }
-    return a;
+    if(!itf.token && obj.auth && !obj.password){
+        itf.token = obj.auth;
+    }else if(!itf.user && obj.username && obj.password){
+        itf.user = obj.username;
+        itf.pass = obj.password;
+    }
+    let auth_str = "";
+    if(itf.token){
+        auth_str = itf.token+"@";
+    }else if(itf.user){
+        auth_str = itf.user+":"+itf.pass+"@";
+    }
+    itf.url = obj.protocol+"//"+auth_str+obj.hostname+":"+(parseInt(obj.port)||4222);
+    return itf;
 }
+
+const EMPTY_BUF = new Buffer([]);
+const B_SPACE = Buffer.from(" ");
+const B_EOL = Buffer.from("\r\n");
+const B_PUB = Buffer.from("PUB ");
+const B_PUBLISH_EMPTY = Buffer.from(" 0\r\n\r\n");
+const B_PING = Buffer.from("PING");
+const B_PING_EOL = Buffer.from("PING\r\n");
+const B_PONG = Buffer.from("PONG");
+const B_PONG_EOL = Buffer.from("PONG\r\n");
+const B_OK = Buffer.from("+OK");
+const B_OK_EOL = Buffer.from("+OK\r\n");
+const B_ERR = Buffer.from("-ERR");
+
+const S_PING = "PING";
+const S_PING_EOL = Buffer.from("PING\r\n");
+const S_PONG = "PONG";
+const S_PONG_EOL = "PONG\r\n";
+const S_OK = "+OK";
