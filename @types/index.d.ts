@@ -10,23 +10,22 @@ export declare const LANG = "fibjs";
  */
 export declare class Nats extends events.EventEmitter {
     private _serverList;
-    private _at;
     private _cfg;
     private _connection;
-    private _info;
     private subscriptions;
     private _pingBacks;
     private _okWaits;
     private _reConnetIng;
     constructor();
-    getInfo(): NatsServerInfo;
+    get address(): NatsAddress;
+    get info(): NatsServerInfo;
     /**
      * 配置连接地址
      * @param addr  ["nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"]
      */
-    setServer(addr: Array<string | NatsAddress> | string | NatsAddress): this;
+    setAllServer(addr: Array<string | NatsAddress> | string | NatsAddress): this;
     addServer(addr: string | NatsAddress): this;
-    removeServer(addr: string | NatsAddress): boolean;
+    removeServer(addr: string | NatsAddress): this;
     reconnect(): void;
     private _do_connect;
     private _shuffle_server_list;
@@ -95,7 +94,7 @@ export declare class Nats extends events.EventEmitter {
      * @param inbox 队列标记
      */
     publish(subject: string, payload?: any, inbox?: string): void;
-    protected send(payload: any): void;
+    protected _send(payload: any, retryWhenReconnect: boolean): void;
     protected _on_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string): void;
     private _on_connect;
     private _on_ok;

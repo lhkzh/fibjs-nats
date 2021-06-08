@@ -24,14 +24,11 @@ export const LANG = "fibjs";
  */
 export class Nats extends events.EventEmitter {
     private _serverList: Array<NatsAddress> = [];
-    private _at: NatsAddress;
     private _cfg: NatsConfig;
     private _connection: NatsConnection;
 
-    private _info: NatsServerInfo;
-
     private subscriptions: Map<string, SubInfo> = new Map<string, SubInfo>();
-    private _pingBacks: Array<(suc: boolean) => void> = [];
+    private _pingBacks: Array<WaitEvt<boolean>> = [];
     private _okWaits: Array<Class_Event> = [];
 
     // private autoReconnect: boolean;
@@ -42,15 +39,18 @@ export class Nats extends events.EventEmitter {
         this._serverList = [];
     }
 
-    public getInfo() {
-        return this._info;
+    public get address(){
+        return this._connection?this._connection.address:null;
+    }
+    public get info() {
+        return this._connection?this._connection.info:null;
     }
 
     /**
      * 配置连接地址
      * @param addr  ["nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"]
      */
-    public setServer(addr: Array<string|NatsAddress> | string | NatsAddress) {
+    public setAllServer(addr: Array<string|NatsAddress> | string | NatsAddress) {
         this._serverList = [];
         if(Array.isArray(addr)){
             (<Array<string|NatsAddress>>addr).forEach(e=>{
@@ -84,7 +84,7 @@ export class Nats extends events.EventEmitter {
             this.close();
             this.reconnect();
         }
-        return true;
+        return this;
     }
 
     //重连
@@ -182,15 +182,11 @@ export class Nats extends events.EventEmitter {
             return false;
         }
         try {
-            this.send(B_PING_EOL);
-            let evt = new coroutine.Event(false),
-                ret: boolean;
-            this._pingBacks.push(suc => {
-                ret = suc;
-                evt.set();
-            });
+            this._send(B_PING_EOL, false);
+            let evt = new WaitEvt<boolean>()
+            this._pingBacks.push(evt);
             evt.wait();
-            return ret;
+            return evt.rsp;
         } catch (e) {
             return false;
         }
@@ -304,7 +300,7 @@ export class Nats extends events.EventEmitter {
             fn: callBack,
             num: limit > 0 ? limit : -1
         });
-        this.send(Buffer.from(`SUB ${subject} ${sid}\r\n`));
+        this._send(Buffer.from(`SUB ${subject} ${sid}${S_EOL}`), true);
         return sid;
     }
 
@@ -314,10 +310,12 @@ export class Nats extends events.EventEmitter {
      * @param quantity
      */
     public unsubscribe(sid: string, quantity?: number) {
-        let msg = arguments.length > 1 ? `UNSUB ${sid} ${quantity}\r\n` : `UNSUB ${sid}\r\n`;
-        this.send(Buffer.from(msg));
+        let msg = Buffer.from(arguments.length > 1 ? `UNSUB ${sid} ${quantity}${S_EOL}` : `UNSUB ${sid}${S_EOL}`);
         if (arguments.length < 2) {
             this.subscriptions.delete(sid);
+            this._send(Buffer.from(msg), false);
+        }else{
+            this._send(Buffer.from(msg), true);
         }
     }
 
@@ -378,23 +376,23 @@ export class Nats extends events.EventEmitter {
         }
         if (payload != null) {
             let pb: Class_Buffer = this.encode(payload);
-            arr.push(Buffer.from(` ${pb.length}\r\n`), pb, B_EOL);
+            arr.push(Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL);
         } else {
             arr.push(B_PUBLISH_EMPTY)
         }
-        this.send(Buffer.concat(arr));
+        this._send(Buffer.concat(arr), true);
     }
 
-    protected send(payload) {
+    protected _send(payload, retryWhenReconnect:boolean) {
         try {
             this._connection.send(payload);
-        } catch (e) {
-            if (this._cfg.reconnect) {
+        } catch (err) {
+            if (this._cfg.reconnect && retryWhenReconnect) {
                 this.once(NatsEvent.OnReCnnect, ()=>{
-                    this.send(payload);
+                    this._send(payload, retryWhenReconnect);
                 });
             } else {
-                throw e;
+                throw err;
             }
         }
     }
@@ -434,7 +432,6 @@ export class Nats extends events.EventEmitter {
 
     private _on_connect(connection:NatsConnection, isReconnected){
         this._connection = connection;
-        this._at = connection.address;
         connection.on("pong", this._on_pong.bind(this));
         connection.on("msg", this._on_msg.bind(this));
         connection.on("close", this._on_lost.bind(this));
@@ -462,7 +459,7 @@ export class Nats extends events.EventEmitter {
         let last = this._connection;
         this.close();
         if (last!=null) {
-            console.error("nats|on_lost => %s", JSON.stringify(this._at));
+            console.error("nats|on_lost => %s", JSON.stringify(last.address));
             this.emit(NatsEvent.OnLost);
             if(this._cfg.reconnect){
                 this.reconnect();
@@ -475,9 +472,7 @@ export class Nats extends events.EventEmitter {
             let a = this._pingBacks;
             this._pingBacks = [];
             try {
-                a.forEach(f => {
-                    f(false);
-                });
+                a.forEach(e=>e.suc(false));
             } catch (e) {
                 console.error("nats|on_pong", e)
             }
@@ -485,7 +480,7 @@ export class Nats extends events.EventEmitter {
             let cb = this._pingBacks.shift();
             if(cb){
                 try {
-                    cb(true);
+                    cb.suc(true);
                 } catch (e) {
                     console.error("nats|on_pong", e)
                 }
@@ -603,18 +598,13 @@ type NatsConnectCfg_One = NatsConfig&{url?:string|NatsAddress};
 type NatsConnectCfg = NatsConnectCfg_Mult | NatsConnectCfg_One;
 
 export type NatsSerizalize = {encode:(payload: any)=> Class_Buffer, decode:(buf:Class_Buffer)=>any};
-export const NatsSerizalize_Json:NatsSerizalize = Object.freeze({encode:(payload:any)=>Buffer.from(JSON.stringify(payload)), decode:(buf:Class_Buffer)=>{ try{
-        return JSON.parse(buf.toString())
-    }catch (e) {
-        console.error("["+buf.toString()+"]",e.toString());
-        throw e;
-    }  }});
+export const NatsSerizalize_Json:NatsSerizalize = Object.freeze({encode:(payload:any)=>Buffer.from(JSON.stringify(payload)), decode:(buf:Class_Buffer)=>JSON.parse(buf.toString())});
 export const NatsSerizalize_Msgpack:NatsSerizalize = Object.freeze({encode:(payload:any)=>msgpack.encode(payload), decode:(buf:Class_Buffer)=>msgpack.decode(buf)});
 export const NatsSerizalize_Str:NatsSerizalize = Object.freeze({encode:(payload:any)=>Buffer.isBuffer(payload)?payload:Buffer.from(String(payload)), decode:(buf:Class_Buffer)=>buf.toString()});
 export const NatsSerizalize_Buf:NatsSerizalize = Object.freeze({encode:(payload:any)=>Buffer.isBuffer(payload)?payload:Buffer.from(String(payload)), decode:(buf:Class_Buffer)=>buf});
 
 const DefaultAddress:NatsAddress = {url:"nats://localhost:4222"};
-const DefaultConfig:NatsConfig = {timeout:3000, reconnect:true, reconnectWait:250, maxReconnectAttempts:86400, name:"fibjs-nats", noEcho:true};
+const DefaultConfig:NatsConfig = {timeout:3000, reconnect:true, reconnectWait:250, maxReconnectAttempts:86400, name:"fibjs-nats", noEcho:true, maxPingOut:9};
 
 abstract class NatsConnection extends EventEmitter{
     protected _state:number;
@@ -704,13 +694,8 @@ class NatsSocket extends NatsConnection{
                     // console.log("read_fail:0",line,data);
                     break;
                 }
-                if (line == S_PING) {
-                    this.send(B_PONG_EOL);
-                } else if (line == S_PONG) {
-                    this.fire("pong");
-                } else if (line == S_OK){
-                    this.fire("ok");
-                } else{
+                let c1 = line.charAt(1);
+                if(c1==CHAR_1_MSG){
                     //MSG subject sid size
                     let arr = line.split(" "),
                         subject:string = arr[1],
@@ -735,6 +720,15 @@ class NatsSocket extends NatsConnection{
                     }
                     stream.read(2);
                     this.fire("msg",subject, sid, data,inbox);
+                }else if(c1==CHAR_1_OK){
+                    this.fire("ok");
+                }else if(c1==CHAR_1_PING){
+                    this.send(B_PONG_EOL);
+                }else if(c1==CHAR_1_PONG){
+                    this.fire("pong");
+                }else if(c1==CHAR_1_ERR){
+                    let tmp = line.split(" ");
+                    this.fire("err", {type:tmp[0],reason:tmp[1]});
                 }
             } catch (e) {
                 console.error("nats|reading", e);
@@ -837,27 +831,8 @@ class NatsWebsocket extends NatsConnection {
                 }
                 return;
             }
-            // let line = buf.slice(0,idx).toString();
-            // buf = buf.slice(idx+2);
-            // offset = 0;
-            // if (line == S_PING) {
-            //     this.send(B_PONG_EOL);
-            // } else if (line == S_PONG) {
-            //     this.fire("pong");
-            // } else if (line == S_OK) {
-            //     this.fire("ok");
-            // } else {
-            let line = buf.slice(0,idx);
-            if (B_PING.equals(line)) {
-                buf = buf.slice(idx+2); offset = 0;
-                this.send(B_PONG_EOL);
-            } else if (B_PONG.equals(line)) {
-                buf = buf.slice(idx+2); offset = 0;
-                this.fire("pong");
-            } else if (B_OK.equals(line)) {
-                buf = buf.slice(idx+2); offset = 0;
-                this.fire("ok");
-            } else {
+            let line = buf.slice(0,idx), b1=line[1];
+            if(b1==BIG_1_MSG){
                 //MSG subject sid size
                 let arr = line.toString().split(" "),
                     subject: string = arr[1],
@@ -877,6 +852,18 @@ class NatsWebsocket extends NatsConnection {
                 data = buf.slice(idx+2,idx+2+len);
                 buf = buf.slice(idx +len + 4);offset = 0;
                 this.fire("msg", subject, sid, data, inbox);
+            }else{
+                buf = buf.slice(idx+2); offset = 0;
+                if(b1==BIT_1_OK){// +OK
+                    this.fire("ok");
+                }else if(b1==BIT_1_PING){//PING
+                    this.send(B_PONG_EOL);
+                }else if(b1==BIT_1_PONG){//PONG
+                    this.fire("pong");
+                }else if(b1==BIT_1_ERR){// -ERR
+                    let tmp = line.toString().split(" ");
+                    this.fire("err", {type:tmp[0],reason:tmp[1]});
+                }
             }
         }
         if(buf.length>offset){
@@ -939,6 +926,18 @@ class NatsWebsocket extends NatsConnection {
         return new NatsWebsocket(sock, cfg, addr, svr_info);
     }
 }
+class WaitEvt<T> extends coroutine.Event{
+    public rsp:T;
+    public err:Error|string;
+    public suc(v:T){
+        this.rsp = v;
+        this.set();
+    }
+    public fail(e:Error|string){
+        this.err = e;
+        this.set();
+    }
+}
 
 function convertToAddress(uri:string) {
     let obj = parse(uri);
@@ -974,16 +973,17 @@ const B_SPACE = Buffer.from(" ");
 const B_EOL = Buffer.from("\r\n");
 const B_PUB = Buffer.from("PUB ");
 const B_PUBLISH_EMPTY = Buffer.from(" 0\r\n\r\n");
-const B_PING = Buffer.from("PING");
 const B_PING_EOL = Buffer.from("PING\r\n");
-const B_PONG = Buffer.from("PONG");
 const B_PONG_EOL = Buffer.from("PONG\r\n");
-const B_OK = Buffer.from("+OK");
-const B_OK_EOL = Buffer.from("+OK\r\n");
-const B_ERR = Buffer.from("-ERR");
+const S_EOL = "\r\n";
 
-const S_PING = "PING";
-const S_PING_EOL = Buffer.from("PING\r\n");
-const S_PONG = "PONG";
-const S_PONG_EOL = "PONG\r\n";
-const S_OK = "+OK";
+const CHAR_1_ERR = "E";
+const CHAR_1_OK = "O";
+const CHAR_1_PING = "I";
+const CHAR_1_PONG = "O";
+const CHAR_1_MSG = "S";
+const BIT_1_ERR:number = Buffer.from(CHAR_1_ERR)[0];
+const BIT_1_OK:number = Buffer.from(CHAR_1_OK)[0];
+const BIT_1_PING:number = Buffer.from(CHAR_1_PING)[0];
+const BIT_1_PONG:number = Buffer.from(CHAR_1_PONG)[0];
+const BIG_1_MSG:number = Buffer.from(CHAR_1_MSG)[0];
