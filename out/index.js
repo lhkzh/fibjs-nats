@@ -428,8 +428,10 @@ class Nats extends events.EventEmitter {
         try {
             this.send_lock.acquire();
             this.sock.send(payload);
+            this.send_lock.release();
         }
         catch (e) {
+            this.send_lock.release();
             this.on_lost();
             if (this.autoReconnect) {
                 if (!this.sock) {
@@ -441,9 +443,6 @@ class Nats extends events.EventEmitter {
             else {
                 throw e;
             }
-        }
-        finally {
-            this.send_lock.release();
         }
     }
     process_msg(subject, sid, payload, inbox) {
@@ -511,13 +510,15 @@ class Nats extends events.EventEmitter {
                     continue;
                 }
                 //MSG subject sid size
-                let arr = line.split(" ");
-                let subject = arr[1];
-                let sid = arr[2];
-                let inbox = arr.length > 4 ? arr[3] : null;
-                let len = Number(arr.pop());
+                let arr = line.split(" "), subject = arr[1], sid = arr[2], inbox, len, data = EMPTY_BUF;
+                if (arr.length > 4) {
+                    inbox = arr[3];
+                    len = Number(arr[4]);
+                }
+                else {
+                    len = Number(arr[3]);
+                }
                 // console.log(line, len);
-                let data = EMPTY_BUF;
                 if (len > 0) {
                     data = stream.read(len);
                     // console.log(data, String(data))
@@ -635,6 +636,7 @@ const S_PONG = "PONG";
 const S_PONG_EOL = "PONG\r\n";
 const S_OK = "+OK";
 /**
+ * 打乱数组
  * @hidden
  */
 function shuffle(a) {

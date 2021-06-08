@@ -8,8 +8,6 @@ import * as events from "events";
 import {nuid} from "./Nuid";
 import {msgpack} from "encoding";
 
-type SubInfo = { subject: string, sid: string, fn: (data: any, meta?: { subject: any, sid: string, reply?: (replyData: any) => void }) => void, num: number, t?: Class_Timer};
-
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
  * 协议参考
@@ -342,7 +340,7 @@ export class Nats extends events.EventEmitter {
      * @param callBack
      * @param limit
      */
-    public queueSubscribe(subject: string, queue: string, callBack: (data: any, meta?: { subject: any, sid: string, reply?: (replyData: any) => void }) => void, limit?: number): string {
+    public queueSubscribe(subject: string, queue: string, callBack: SubFn, limit?: number): string {
         return this.subscribe(subject + ' ' + queue, callBack, limit);
     }
 
@@ -353,7 +351,7 @@ export class Nats extends events.EventEmitter {
      * @param limit 限制执行次数，默认无限次
      * @returns 订阅的编号
      */
-    public subscribe(subject: string, callBack: (data: any, meta?: { subject: any, sid: string, reply?: (replyData: any) => void }) => void, limit?: number): string {
+    public subscribe(subject: string, callBack: SubFn, limit?: number): string {
         let sid = nuid.next();
         this.subscriptions.set(sid, {
             subject: subject,
@@ -444,7 +442,9 @@ export class Nats extends events.EventEmitter {
         try {
             this.send_lock.acquire();
             this.sock.send(payload);
+            this.send_lock.release();
         } catch (e) {
+            this.send_lock.release();
             this.on_lost();
             if (this.autoReconnect) {
                 if (!this.sock){
@@ -455,8 +455,6 @@ export class Nats extends events.EventEmitter {
             } else {
                 throw e;
             }
-        } finally {
-            this.send_lock.release();
         }
     }
 
@@ -521,13 +519,19 @@ export class Nats extends events.EventEmitter {
                     continue;
                 }
                 //MSG subject sid size
-                let arr = line.split(" ");
-                let subject = arr[1];
-                let sid = arr[2];
-                let inbox = arr.length > 4 ? arr[3] : null;
-                let len = Number(arr.pop());
+                let arr = line.split(" "),
+                    subject:string = arr[1],
+                    sid:string = arr[2],
+                    inbox:string,
+                    len:number,
+                    data = EMPTY_BUF;
+                if(arr.length>4){
+                    inbox = arr[3];
+                    len = Number(arr[4]);
+                }else{
+                    len = Number(arr[3]);
+                }
                 // console.log(line, len);
-                let data = EMPTY_BUF;
                 if (len>0) {
                     data = stream.read(len);
                     // console.log(data, String(data))
@@ -647,8 +651,16 @@ const S_PONG = "PONG";
 const S_PONG_EOL = "PONG\r\n";
 const S_OK = "+OK";
 
+//侦听器-回调
+type SubFn = (data: any, meta?: { subject: any, sid: string, reply?: (replyData: any) => void }) => void;
+//侦听器-结构描述
+type SubInfo = { subject: string, sid: string, fn: SubFn, num: number, t?: Class_Timer};
+
 //{"server_id":"NDKOPUBNP4IRWW2UGWBNJ2VNNCWNBO3BTJXBDJ7JIA77ZVENDQF6U7QC","version":"2.0.4","proto":1,"git_commit":"c8ca58e","go":"go1.12.8","host":"0.0.0.0","port":4222,"max_payload":1048576,"cli
 // ent_id":20}
+/**
+ * 服务器信息描述
+ */
 export interface NatsServerInfo {
     server_id: string;
     version: string;
@@ -658,7 +670,9 @@ export interface NatsServerInfo {
     host: string;
     port: number;
 }
-
+/**
+ * 服务器地址配置
+ */
 export interface NatsAddress {
     host: string;
     port: number;
@@ -668,6 +682,7 @@ export interface NatsAddress {
 }
 
 /**
+ * 打乱数组
  * @hidden
  */
 function shuffle<T>(a: T[]): T[] {

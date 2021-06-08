@@ -70,11 +70,7 @@ export declare class Nats extends events.EventEmitter {
      * @param callBack
      * @param limit
      */
-    queueSubscribe(subject: string, queue: string, callBack: (data: any, meta?: {
-        subject: any;
-        sid: string;
-        reply?: (replyData: any) => void;
-    }) => void, limit?: number): string;
+    queueSubscribe(subject: string, queue: string, callBack: SubFn, limit?: number): string;
     /**
      * 订阅主题
      * @param subject 主题
@@ -82,11 +78,7 @@ export declare class Nats extends events.EventEmitter {
      * @param limit 限制执行次数，默认无限次
      * @returns 订阅的编号
      */
-    subscribe(subject: string, callBack: (data: any, meta?: {
-        subject: any;
-        sid: string;
-        reply?: (replyData: any) => void;
-    }) => void, limit?: number): string;
+    subscribe(subject: string, callBack: SubFn, limit?: number): string;
     /**
      * 取消订阅
      * @param sid 订阅编号
@@ -130,6 +122,14 @@ export declare class NatsMsgpack extends Nats {
     protected encode(payload: any): Class_Buffer;
     protected decode(data: Class_Buffer): any;
 }
+declare type SubFn = (data: any, meta?: {
+    subject: any;
+    sid: string;
+    reply?: (replyData: any) => void;
+}) => void;
+/**
+ * 服务器信息描述
+ */
 export interface NatsServerInfo {
     server_id: string;
     version: string;
@@ -139,6 +139,9 @@ export interface NatsServerInfo {
     host: string;
     port: number;
 }
+/**
+ * 服务器地址配置
+ */
 export interface NatsAddress {
     host: string;
     port: number;
@@ -146,3 +149,4 @@ export interface NatsAddress {
     pass?: string;
     auth_token?: string;
 }
+export {};
