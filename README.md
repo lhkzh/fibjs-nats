@@ -3,6 +3,7 @@ nats-client nats客户端实现
 
  * 暂不支持ssl&jwt&wss&nkey    
  * msgpack需要fibjsv0.30+    
+ * sub/unsub当前实现先处理本地后send未确认ok    
  * bug->https://github.com/lhkzh/fibjs-nats   
  * fibjs->https://fibjs.org    
  使用  
