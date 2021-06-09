@@ -12,7 +12,7 @@ export declare class Nats extends events.EventEmitter {
     private _serverList;
     private _cfg;
     private _connection;
-    private subscriptions;
+    private _subs;
     private _pingBacks;
     private _okWaits;
     private _reConnetIng;
@@ -41,17 +41,21 @@ export declare class Nats extends events.EventEmitter {
      */
     ping(): boolean;
     /**
+     * 检测是否能连通
+     */
+    pingAsync(): Promise<boolean>;
+    /**
      * 请求接口
      * @param subject
      * @param payload
      */
-    request(subject: string, payload: any, timeoutTtl?: number): Promise<any>;
+    requestAsync(subject: string, payload: any, timeoutTtl?: number): Promise<any>;
     /**
      * 同步-请求接口
      * @param subject
      * @param payload
      */
-    requestSync(subject: string, payload: any, timeoutTtl?: number): any;
+    request(subject: string, payload: any, timeoutTtl?: number): any;
     /**
      * 抢占式(queue)侦听主题
      * @param subject
@@ -92,12 +96,13 @@ export declare class Nats extends events.EventEmitter {
      * 发布数据
      * @param subject 主题
      * @param payload 数据
-     * @param inbox 队列标记
      */
-    publish(subject: string, payload?: any, inbox?: string): void;
+    publish(subject: string, payload?: any): void;
+    publishInbox(subject: string, inbox: string, payload: any): void;
     protected _send(payload: any, retryWhenReconnect: boolean): void;
     protected _on_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string): void;
     private _on_connect;
+    private _on_err;
     private _on_ok;
     private _on_lost;
     protected _on_pong(is_lost: boolean): void;
@@ -113,7 +118,7 @@ export declare class NatsEvent {
     static OnReconnectFail: string;
 }
 declare type SubFn = (data: any, meta?: {
-    subject: any;
+    subject: string;
     sid: string;
     reply?: (replyData: any) => void;
 }) => void;

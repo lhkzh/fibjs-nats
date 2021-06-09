@@ -10,7 +10,8 @@
   "license": "ISC",
   "keywords": [
     "fibjs",
-    "nats"
+    "nats",
+    "client"
   ],
   "engines": {
     "fibjs": ">0.33.0"
