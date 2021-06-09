@@ -651,48 +651,25 @@ class NatsSocket extends NatsConnection {
         _sock.timeout = 0;
         this._lock = new coroutine.Lock();
         this._state = 1;
-        this._reader = coroutine.start(this._read.bind(this));
-    }
-    _read() {
-        let stream = new io_1.BufferedStream(this._sock);
-        stream.EOL = S_EOL;
-        let is_fail = (s) => s === null;
-        while (this._state == 1) {
-            try {
-                let line = stream.readLine();
-                if (is_fail(line)) {
-                    // console.log("read_fail:0",line,data);
-                    break;
+        this._reader = coroutine.start(() => {
+            let is_fail = (s) => s === null, tmp;
+            while (this._state == 1) {
+                try {
+                    tmp = this._sock.read();
+                    if (is_fail(tmp)) {
+                        console.error("nats|reading", "read_empty_lost");
+                        this._on_lost("read_empty_lost");
+                    }
+                    else {
+                        this.processMsg(tmp);
+                    }
                 }
-                let c1 = line.charAt(1);
-                if (c1 == CHAR_1_MSG) {
-                    //MSG subject sid size
-                    let arr = line.split(" "), len = Number(arr[arr.length - 1]), data = len > 0 ? stream.read(len) : EMPTY_BUF;
-                    //["msg", subject,sid,data,inbox]
-                    this.fire("msg", arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
-                    //skip EOL
-                    stream.read(2);
-                }
-                else if (c1 == CHAR_1_OK) {
-                    this.fire("ok");
-                }
-                else if (c1 == CHAR_1_PING) {
-                    this.send(B_PONG_EOL);
-                }
-                else if (c1 == CHAR_1_PONG) {
-                    this.fire("pong");
-                }
-                else if (c1 == CHAR_1_ERR) {
-                    let tmp = line.split(" ");
-                    this.fire("err", { type: tmp[0], reason: tmp[1] });
+                catch (e) {
+                    console.error("nats|reading", e);
+                    this._on_lost(e.message);
                 }
             }
-            catch (e) {
-                console.error("nats|reading", e);
-                this._on_lost(e.message);
-                break;
-            }
-        }
+        });
     }
     send(payload) {
         try {
