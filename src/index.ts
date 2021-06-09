@@ -139,7 +139,7 @@ export class Nats extends events.EventEmitter {
             }
         }
         if (suc_connection == null) {
-            this.emit(NatsEvent.OnIoError, "connect_nats_fail", JSON.stringify(this._serverList));
+            this.emit(NatsEvent.OnError, "connect_nats_fail", JSON.stringify(this._serverList));
             let err = new Error("connect_nats_fail");
             console.log("nats|connect", err.message);
             throw err;
@@ -198,26 +198,25 @@ export class Nats extends events.EventEmitter {
      * @param payload
      */
     public request(subject: string, payload: any, timeoutTtl: number = 3000): Promise<any> {
-        let self = this, sid, subs = self.subscriptions, timeout;
         return new Promise<any>((resolve, reject) => {
+            let sid, subs = this.subscriptions, timeout;
             try {
                 let inbox = '_INBOX.' + nuid.next();
-                sid = self.subscribe(inbox, d => {
+                let [sid,buf] = this._pre_sub_local_first(inbox, d=>{
                     resolve(d);
                 }, 1);
                 let part = subs.get(sid);
                 timeout = part.t = setTimeout(() => {
                     subs.delete(sid);
                     reject(new Error("nats_req_timeout:" + subject));
-                    self.unsubscribe(inbox);
+                    this.unsubscribe(inbox);
                 }, timeoutTtl);
-                self.publish(subject, payload, inbox);
+                let pb = this.encode(payload);
+                this._send(Buffer.concat([buf, B_PUB, Buffer.from(subject), B_SPACE, Buffer.from(inbox), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), false);
             } catch (e) {
-                if (sid) {
-                    subs.delete(sid);
-                    if (timeout) {
-                        clearTimeout(timeout);
-                    }
+                subs.delete(sid);
+                if (timeout) {
+                    clearTimeout(timeout);
                 }
                 reject(e);
             }
@@ -230,48 +229,26 @@ export class Nats extends events.EventEmitter {
      * @param payload
      */
     public requestSync(subject: string, payload: any, timeoutTtl: number = 3000): any {
-        let self = this,
-            subs = this.subscriptions,
+        let subs = this.subscriptions,
             inbox = '_INBOX.' + nuid.next(),
-            evt = new coroutine.Event(false),
-            isTimeouted, timeout: Class_Timer, sid: string, rsp: any
-        ;
-
+            evt = new WaitTimeoutEvt<any>(timeoutTtl, `nats_req_timeout:${subject}`);
+        let [sid,buf] = this._pre_sub_local_first(inbox, evt.suc.bind(evt), 1);
         try {
-            sid = this.subscribe(inbox, function (d) {
-                rsp = d;
-                evt.set();
-            }, 1);
-            timeout = subs.get(sid).t = setTimeout(function () {
-                isTimeouted = true;
-                subs.delete(sid);
-                evt.set();
-                try {
-                    self.unsubscribe(inbox);
-                } catch (e) {
-                }
-            }, timeoutTtl);
-            this.publish(subject, payload, inbox);
+            let pb = this.encode(payload);
+            this._send(Buffer.concat([buf, B_PUB, Buffer.from(subject), B_SPACE, Buffer.from(inbox), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), false);
         } catch (e) {
-            if (sid) {
-                subs.delete(sid);
-                if (timeout) {
-                    clearTimeout(timeout);
-                    try {
-                        this.unsubscribe(inbox);
-                    } catch (e) {
-                    }
-                }
-            }
-            throw e;
+            evt.fail(e);
         }
         evt.wait();
         subs.delete(sid);
-        clearTimeout(timeout);
-        if (isTimeouted) {
-            throw new Error("nats_req_timeout_" + subject);
+        try{
+            this._send(Buffer.from(`UNSUB ${sid}${S_EOL}`), false);
+        }catch (e) {
         }
-        return rsp;
+        if (evt.err) {
+            throw new Error(String(evt.err));
+        }
+        return evt.rsp;
     }
 
     /**
@@ -293,6 +270,11 @@ export class Nats extends events.EventEmitter {
      * @returns 订阅的编号
      */
     public subscribe(subject: string, callBack: SubFn, limit?: number): string {
+        let [sid,buf] = this._pre_sub_local_first(subject, callBack, limit);
+        this._send(buf, true);
+        return sid;
+    }
+    private _pre_sub_local_first(subject: string, callBack: SubFn, limit?: number):[string,Class_Buffer]{
         let sid = nuid.next();
         this.subscriptions.set(sid, {
             subject: subject,
@@ -300,22 +282,22 @@ export class Nats extends events.EventEmitter {
             fn: callBack,
             num: limit > 0 ? limit : -1
         });
-        this._send(Buffer.from(`SUB ${subject} ${sid}${S_EOL}`), true);
-        return sid;
+        return [sid, Buffer.from(`SUB ${subject} ${sid}${S_EOL}`)];
     }
-
     /**
      * 取消订阅
      * @param sid 订阅编号
      * @param quantity
      */
     public unsubscribe(sid: string, quantity?: number) {
-        let msg = Buffer.from(arguments.length > 1 ? `UNSUB ${sid} ${quantity}${S_EOL}` : `UNSUB ${sid}${S_EOL}`);
-        if (arguments.length < 2) {
-            this.subscriptions.delete(sid);
-            this._send(Buffer.from(msg), false);
-        }else{
-            this._send(Buffer.from(msg), true);
+        if(this.subscriptions.has(sid)){
+            let msg = Buffer.from(arguments.length > 1 ? `UNSUB ${sid} ${quantity}${S_EOL}` : `UNSUB ${sid}${S_EOL}`);
+            if (arguments.length < 2) {
+                this.subscriptions.delete(sid);
+                this._send(Buffer.from(msg), false);
+            }else{
+                this._send(Buffer.from(msg), true);
+            }
         }
     }
 
@@ -324,10 +306,18 @@ export class Nats extends events.EventEmitter {
      * @param subject 主题
      */
     public unsubscribeSubject(subject: string) {
+        let barr = [], idarr=[];
         for(let e of this.subscriptions.values()){
             if (e.subject == subject) {
-                this.unsubscribe(e.sid);
+                barr.push(Buffer.from(`UNSUB ${e.sid}${S_EOL}`));
+                idarr.push(e.sid);
             }
+        }
+        if(idarr.length){
+            for(let sid of idarr){
+                this.subscriptions.delete(sid);
+            }
+            this._send(Buffer.concat(barr), false);
         }
     }
 
@@ -340,11 +330,12 @@ export class Nats extends events.EventEmitter {
         if (!this._connection) {
             return;
         }
-        for(let e of vals){
-            try {
-                this.unsubscribe(e.sid);
-            } catch (e) {
-            }
+        let barr = [];
+        for(let e of this.subscriptions.values()){
+            barr.push(Buffer.from(`UNSUB ${e.sid}${S_EOL}`));
+        }
+        if(barr.length){
+            this._send(Buffer.concat(barr), false);
         }
     }
 
@@ -360,6 +351,7 @@ export class Nats extends events.EventEmitter {
             last.close();
         }
         this._cfg.reconnect = flag;
+        this.unsubscribeAll();
         this._on_pong(true);
     }
 
@@ -388,7 +380,7 @@ export class Nats extends events.EventEmitter {
             this._connection.send(payload);
         } catch (err) {
             if (this._cfg.reconnect && retryWhenReconnect) {
-                this.once(NatsEvent.OnReCnnect, ()=>{
+                this.once(NatsEvent.OnReconnectSuc, ()=>{
                     this._send(payload, retryWhenReconnect);
                 });
             } else {
@@ -441,9 +433,9 @@ export class Nats extends events.EventEmitter {
         }
         coroutine.start(()=>{
             if(this._connection==connection){
-                this.emit(NatsEvent.OnCnnect);
+                this.emit(NatsEvent.OnConnect);
                 if(isReconnected){
-                    this.emit(NatsEvent.OnReCnnect);
+                    this.emit(NatsEvent.OnReconnectSuc);
                 }
             }
         });
@@ -529,14 +521,13 @@ export class Nats extends events.EventEmitter {
         return imp._do_connect(false);
     }
 }
-
-export const NatsEvent=Object.freeze({
-    OnCnnect:"connect",
-    OnIoError:"error",
-    OnLost:"lost",
-    OnReconnectFail:"on_reconnect_fail",
-    OnReCnnect:"reconnect"
-});
+export class NatsEvent {
+    public static OnConnect = "connect";
+    public static OnError = "error";
+    public static OnLost = "lost";
+    public static OnReconnectSuc = "reconnect_suc";
+    public static OnReconnectFail = "reconnect_fail";
+}
 
 //侦听器-回调
 type SubFn = (data: any, meta?: { subject: any, sid: string, reply?: (replyData: any) => void }) => void;
@@ -673,11 +664,60 @@ abstract class NatsConnection extends EventEmitter{
             this.off(e);
         })
     }
+
+    protected _last:Class_Buffer;
+    protected processMsg(buf:Class_Buffer){
+        if(this._last){
+            this._last.append(buf);
+            buf = this._last;
+            this._last = null;
+        }
+        let idx:number,offset=0,b1:number;
+        while((idx=buf.indexOf(B_EOL,offset))>-1){
+            if(idx==0){
+                offset+=2;
+                if(buf.length>offset){
+                    continue;
+                }
+                return;
+            }
+            b1=buf[1];
+            if(b1==BIG_1_MSG){
+                let line = buf.slice(0,idx);
+                //MSG subject sid size
+                let arr = line.toString().split(" "),
+                    len: number = Number(arr[arr.length-1]);
+                if(buf.length<(idx+len+2)){
+                    break;
+                }
+                let data = buf.slice(idx+2,idx+2+len);
+                buf = buf.slice(idx +len + 4);offset = 0;
+                //["msg", subject,sid,data,inbox]
+                this.fire("msg", arr[1], arr[2], data, arr.length>4?arr[3]:null);
+            }else{
+                if(b1==BIT_1_OK){// +OK
+                    this.fire("ok");
+                }else if(b1==BIT_1_PING){//PING
+                    this.send(B_PONG_EOL);
+                }else if(b1==BIT_1_PONG){//PONG
+                    this.fire("pong");
+                }else if(b1==BIT_1_ERR){// -ERR
+                    let line = buf.slice(0,idx);
+                    let tmp = line.toString().split(" ");
+                    this.fire("err", {type:tmp[0],reason:tmp[1]});
+                }
+                buf = buf.slice(idx+2); offset = 0;
+            }
+        }
+        if(buf.length>offset){
+            this._last = buf.slice(offset);
+        }
+    }
 }
 class NatsSocket extends NatsConnection{
     private _lock:Class_Lock;
     private _reader:Class_Fiber;
-    constructor(private _sock:Class_Socket, private _stream:Class_BufferedStream, _cfg:NatsConfig, _addr:NatsAddress, _info:NatsServerInfo) {
+    constructor(private _sock:Class_Socket, _cfg:NatsConfig, _addr:NatsAddress, _info:NatsServerInfo) {
         super(_cfg, _addr, _info);
         _sock.timeout = 0;
         this._lock = new coroutine.Lock();
@@ -685,7 +725,7 @@ class NatsSocket extends NatsConnection{
         this._reader = coroutine.start(this._read.bind(this));
     }
     private _read(){
-        let stream = this._stream;
+        let stream = new BufferedStream(this._sock);stream.EOL = S_EOL;
         let is_fail = (s:Class_Buffer|string)=>s===null;
         while(this._state==1){
             try {
@@ -698,28 +738,12 @@ class NatsSocket extends NatsConnection{
                 if(c1==CHAR_1_MSG){
                     //MSG subject sid size
                     let arr = line.split(" "),
-                        subject:string = arr[1],
-                        sid:string = arr[2],
-                        inbox:string,
-                        len:number,
-                        data = EMPTY_BUF;
-                    if(arr.length>4){
-                        inbox = arr[3];
-                        len = Number(arr[4]);
-                    }else{
-                        len = Number(arr[3]);
-                    }
-                    // console.log(line, len);
-                    if (len>0) {
-                        data = stream.read(len);
-                        // console.log(data, String(data))
-                        if (is_fail(data)) {
-                            // console.log("read_fail:1",line,data);
-                            break;
-                        }
-                    }
+                        len:number = Number(arr[arr.length-1]),
+                        data = len>0 ? stream.read(len):EMPTY_BUF;
+                    //["msg", subject,sid,data,inbox]
+                    this.fire("msg", arr[1], arr[2], data, arr.length>4?arr[3]:null);
+                    //skip EOL
                     stream.read(2);
-                    this.fire("msg",subject, sid, data,inbox);
                 }else if(c1==CHAR_1_OK){
                     this.fire("ok");
                 }else if(c1==CHAR_1_PING){
@@ -736,7 +760,6 @@ class NatsSocket extends NatsConnection{
                 break;
             }
         }
-        this._on_lost("read_lost");
     }
     public send(payload:Class_Buffer) {
         try {
@@ -768,7 +791,7 @@ class NatsSocket extends NatsConnection{
             }
             sock.connect(url_obj.hostname, parseInt(url_obj.port)||4222);
             stream = new BufferedStream(sock);
-            stream.EOL = "\r\n";
+            stream.EOL = S_EOL;
             let info = stream.readLine(512);
             if (info == null) {
                 fn_close();
@@ -792,7 +815,7 @@ class NatsSocket extends NatsConnection{
             sock.send(Buffer.from(`CONNECT ${JSON.stringify(opt)}\r\n`));
             sock.send(B_PING_EOL);
             if (stream.readLine(6) != null) {
-                return new NatsSocket(sock, stream, cfg, addr, JSON.parse(info.toString().split(" ")[1]));
+                return new NatsSocket(sock, cfg, addr, JSON.parse(info.toString().split(" ")[1]));
             } else {
                 fn_close();
                 throw new Error("auth_connect_fail");
@@ -815,61 +838,7 @@ class NatsWebsocket extends NatsConnection {
             this.processMsg(<Class_Buffer>e.data)
         };
     }
-    private _last:Class_Buffer;
-    private processMsg(buf:Class_Buffer){
-        if(this._last){
-            this._last.append(buf);
-            buf = this._last;
-            this._last = null;
-        }
-        let idx:number,offset=0;
-        while((idx=buf.indexOf(B_EOL,offset))>-1){
-            if(idx==0){
-                offset+=2;
-                if(buf.length>offset){
-                    continue;
-                }
-                return;
-            }
-            let line = buf.slice(0,idx), b1=line[1];
-            if(b1==BIG_1_MSG){
-                //MSG subject sid size
-                let arr = line.toString().split(" "),
-                    subject: string = arr[1],
-                    sid: string = arr[2],
-                    inbox: string,
-                    len: number,
-                    data = EMPTY_BUF;
-                if (arr.length > 4) {
-                    inbox = arr[3];
-                    len = Number(arr[4]);
-                } else {
-                    len = Number(arr[3]);
-                }
-                if(buf.length<(idx+len+2)){
-                    break;
-                }
-                data = buf.slice(idx+2,idx+2+len);
-                buf = buf.slice(idx +len + 4);offset = 0;
-                this.fire("msg", subject, sid, data, inbox);
-            }else{
-                buf = buf.slice(idx+2); offset = 0;
-                if(b1==BIT_1_OK){// +OK
-                    this.fire("ok");
-                }else if(b1==BIT_1_PING){//PING
-                    this.send(B_PONG_EOL);
-                }else if(b1==BIT_1_PONG){//PONG
-                    this.fire("pong");
-                }else if(b1==BIT_1_ERR){// -ERR
-                    let tmp = line.toString().split(" ");
-                    this.fire("err", {type:tmp[0],reason:tmp[1]});
-                }
-            }
-        }
-        if(buf.length>offset){
-            this._last = buf.slice(offset);
-        }
-    }
+
     public send(payload:Class_Buffer) {
         try {
             this._sock.send(payload);
@@ -936,6 +905,19 @@ class WaitEvt<T> extends coroutine.Event{
     public fail(e:Error|string){
         this.err = e;
         this.set();
+    }
+}
+class WaitTimeoutEvt<T> extends WaitEvt<T>{
+    private t:Class_Timer;
+    constructor(timeout_ttl:number, timeout_reason:string) {
+        super();
+        this.t = setTimeout(()=>{
+           this.fail(timeout_reason);
+        }, timeout_ttl);
+    }
+    public set(){
+        clearTimeout(this.t);
+        super.set();
     }
 }
 

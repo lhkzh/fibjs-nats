@@ -68,6 +68,7 @@ export declare class Nats extends events.EventEmitter {
      * @returns 订阅的编号
      */
     subscribe(subject: string, callBack: SubFn, limit?: number): string;
+    private _pre_sub_local_first;
     /**
      * 取消订阅
      * @param sid 订阅编号
@@ -104,13 +105,13 @@ export declare class Nats extends events.EventEmitter {
     protected decode(data: Class_Buffer): any;
     static make(cfg?: string | NatsAddress | NatsConnectCfg): Nats;
 }
-export declare const NatsEvent: Readonly<{
-    OnCnnect: string;
-    OnIoError: string;
-    OnLost: string;
-    OnReconnectFail: string;
-    OnReCnnect: string;
-}>;
+export declare class NatsEvent {
+    static OnConnect: string;
+    static OnError: string;
+    static OnLost: string;
+    static OnReconnectSuc: string;
+    static OnReconnectFail: string;
+}
 declare type SubFn = (data: any, meta?: {
     subject: any;
     sid: string;
