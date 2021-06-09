@@ -1,9 +1,10 @@
 # fibjs-nats
 nats-client nats客户端实现  
 
- * 暂不支持ssl&jwt&wss,msgpack需要fibjsv0.30+  
- * 暂不支持nkey和tls证书  
- 
+ * 暂不支持ssl&jwt&wss&nkey    
+ * msgpack需要fibjsv0.30+    
+ * bug->https://github.com/lhkzh/fibjs-nats   
+ * fibjs->https://fibjs.org    
  使用  
 <pre>
 <code>
