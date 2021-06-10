@@ -14,7 +14,7 @@ const url_1 = require("url");
 const queryString = require("querystring");
 const events_1 = require("events");
 const io_1 = require("io");
-exports.VERSION = "1.1.0";
+exports.VERSION = "1.1.2";
 exports.LANG = "fibjs";
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
@@ -28,7 +28,6 @@ class Nats extends events.EventEmitter {
         this._serverList = [];
         this._subs = new Map();
         this._pingBacks = [];
-        this._okWaits = [];
         this._serverList = [];
     }
     get address() {
@@ -209,11 +208,7 @@ class Nats extends events.EventEmitter {
                 clearTimeout(timer);
                 err ? reject(err) : resolve(rsp);
             }, timer = setTimeout(() => {
-                try {
-                    this._unsubscribe_fast(subInfo.sid);
-                }
-                catch (e) {
-                }
+                subInfo.cancel();
                 cbk(null, "nats_request_timeout:" + subject);
             }, timeoutTtl);
             let [subInfo, subCmdBuf] = this._pre_sub_local_first(inbox, cbk, true);
@@ -241,11 +236,7 @@ class Nats extends events.EventEmitter {
             evt.fail(e);
         }
         if (evt.err) {
-            try {
-                this._unsubscribe_fast(subInfo.sid);
-            }
-            catch (e) {
-            }
+            subInfo.cancel();
             if (evt.err === WaitTimeoutEvt.TimeOutErr) {
                 evt.err = new Error(`nats_request_timeout:${subject}`);
             }
@@ -261,7 +252,9 @@ class Nats extends events.EventEmitter {
      * @param limit
      */
     queueSubscribe(subject, queue, callBack, limit) {
-        return this.subscribe(subject + ' ' + queue, callBack, limit);
+        let [subInfo, subCommdBuf] = this._pre_sub_local_first(subject, callBack, limit, queue);
+        this._send(subCommdBuf, true);
+        return subInfo;
     }
     /**
      * 订阅主题
@@ -273,14 +266,16 @@ class Nats extends events.EventEmitter {
     subscribe(subject, callBack, limit) {
         let [subInfo, subCommdBuf] = this._pre_sub_local_first(subject, callBack, limit);
         this._send(subCommdBuf, true);
-        return subInfo.sid;
+        return subInfo;
     }
-    _pre_sub_local_first(subject, callBack, limit) {
-        let sid = Nuid_1.nuid.next();
-        let sobj = {
+    _pre_sub_local_first(subject, callBack, limit, queue) {
+        let sid = Nuid_1.nuid.next(), sobj = {
             subject: subject,
             sid: sid,
-            fn: callBack
+            fn: callBack,
+            cancel: () => {
+                this._unsubscribe_fast(sid);
+            }
         };
         if (limit === true) {
             sobj.fast = true;
@@ -289,18 +284,23 @@ class Nats extends events.EventEmitter {
             sobj.num = limit;
         }
         this._subs.set(sid, sobj);
+        if (queue) {
+            sobj.queue = queue;
+            return [sobj, Buffer.from(`SUB ${subject} ${queue} ${sid}${S_EOL}`)];
+        }
         return [sobj, Buffer.from(`SUB ${subject} ${sid}${S_EOL}`)];
     }
     _unsubscribe_fast(sid) {
         this._subs.delete(sid);
-        this._send(Buffer.from(`UNSUB ${sid}${S_EOL}`), false);
+        this._connection && this._send(Buffer.from(`UNSUB ${sid}${S_EOL}`), false);
     }
     /**
      * 取消订阅
-     * @param sid 订阅编号
+     * @param sub 订阅编号
      * @param quantity
      */
-    unsubscribe(sid, quantity) {
+    unsubscribe(sub, quantity) {
+        let sid = sub.sid ? sub.sid : sub;
         if (this._subs.has(sid)) {
             if (arguments.length < 2) {
                 this._unsubscribe_fast(sid);
@@ -315,17 +315,14 @@ class Nats extends events.EventEmitter {
      * @param subject 主题
      */
     unsubscribeSubject(subject) {
-        let barr = [], idarr = [];
+        let barr = [];
         for (let e of this._subs.values()) {
             if (e.subject == subject) {
                 barr.push(Buffer.from(`UNSUB ${e.sid}${S_EOL}`));
-                idarr.push(e.sid);
+                this._subs.delete(e.sid);
             }
         }
-        if (idarr.length) {
-            for (let sid of idarr) {
-                this._subs.delete(sid);
-            }
+        if (barr.length) {
             this._send(Buffer.concat(barr), false);
         }
     }
@@ -335,15 +332,14 @@ class Nats extends events.EventEmitter {
     unsubscribeAll() {
         let vals = this._subs.values();
         this._subs = new Map();
-        if (!this._connection) {
-            return;
-        }
-        let barr = [];
-        for (let e of this._subs.values()) {
-            barr.push(Buffer.from(`UNSUB ${e.sid}${S_EOL}`));
-        }
-        if (barr.length && this._connection) {
-            this._send(Buffer.concat(barr), false);
+        if (this._connection) {
+            let barr = [];
+            for (let e of vals) {
+                barr.push(Buffer.from(`UNSUB ${e.sid}${S_EOL}`));
+            }
+            if (barr.length) {
+                this._send(Buffer.concat(barr), false);
+            }
         }
     }
     /**
@@ -546,12 +542,34 @@ NatsEvent.OnError = "error";
 NatsEvent.OnLost = "lost";
 NatsEvent.OnReconnectSuc = "reconnect_suc";
 NatsEvent.OnReconnectFail = "reconnect_fail";
-exports.NatsSerizalize_Json = Object.freeze({ encode: (payload) => Buffer.from(JSON.stringify(payload)), decode: (buf) => JSON.parse(buf.toString()) });
-exports.NatsSerizalize_Msgpack = Object.freeze({ encode: (payload) => encoding_1.msgpack.encode(payload), decode: (buf) => encoding_1.msgpack.decode(buf) });
-exports.NatsSerizalize_Str = Object.freeze({ encode: (payload) => Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload)), decode: (buf) => buf.toString() });
-exports.NatsSerizalize_Buf = Object.freeze({ encode: (payload) => Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload)), decode: (buf) => buf });
+exports.NatsSerizalize_Json = Object.freeze({
+    encode: (payload) => Buffer.from(JSON.stringify(payload)),
+    decode: (buf) => JSON.parse(buf.toString())
+});
+exports.NatsSerizalize_Msgpack = Object.freeze({
+    encode: (payload) => encoding_1.msgpack.encode(payload),
+    decode: (buf) => encoding_1.msgpack.decode(buf)
+});
+exports.NatsSerizalize_Str = Object.freeze({
+    encode: (payload) => Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload)),
+    decode: (buf) => buf.toString()
+});
+exports.NatsSerizalize_Buf = Object.freeze({
+    encode: (payload) => Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload)),
+    decode: (buf) => buf
+});
 const DefaultAddress = { url: "nats://localhost:4222" };
-const DefaultConfig = { timeout: 3000, reconnect: true, reconnectWait: 250, maxReconnectAttempts: 86400, name: "fibjs-nats", noEcho: true, maxPingOut: 9 };
+const DefaultConfig = {
+    timeout: 3000,
+    reconnect: true,
+    reconnectWait: 250,
+    maxReconnectAttempts: 86400,
+    name: "fibjs-nats",
+    maxPingOut: 9,
+    noEcho: false,
+    verbose: false,
+    pedantic: false
+};
 class NatsConnection extends events_1.EventEmitter {
     constructor(_cfg, _addr, _info) {
         super();
@@ -670,13 +688,13 @@ class NatsConnection extends events_1.EventEmitter {
     }
     static buildConnectCmd(addr, cfg) {
         let opt = {
-            verbose: false,
-            pedantic: false,
             ssl_required: false,
             name: cfg.name,
             lang: exports.LANG,
             version: exports.VERSION,
             noEcho: cfg.noEcho,
+            verbose: cfg.verbose,
+            pedantic: cfg.pedantic,
         };
         if (addr.user && addr.pass) {
             opt.user = addr.user;

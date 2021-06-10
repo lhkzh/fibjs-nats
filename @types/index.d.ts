@@ -1,6 +1,6 @@
 /// <reference types="@fibjs/types" />
 import * as events from "events";
-export declare const VERSION = "1.1.0";
+export declare const VERSION = "1.1.2";
 export declare const LANG = "fibjs";
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
@@ -14,7 +14,6 @@ export declare class Nats extends events.EventEmitter {
     private _connection;
     private _subs;
     private _pingBacks;
-    private _okWaits;
     private _reConnetIng;
     constructor();
     get address(): NatsAddress;
@@ -63,7 +62,7 @@ export declare class Nats extends events.EventEmitter {
      * @param callBack
      * @param limit
      */
-    queueSubscribe(subject: string, queue: string, callBack: SubFn, limit?: number): string;
+    queueSubscribe(subject: string, queue: string, callBack: SubFn, limit?: number): NatsSub;
     /**
      * 订阅主题
      * @param subject 主题
@@ -71,15 +70,15 @@ export declare class Nats extends events.EventEmitter {
      * @param limit 限制执行次数，默认无限次
      * @returns 订阅的编号
      */
-    subscribe(subject: string, callBack: SubFn, limit?: number): string;
+    subscribe(subject: string, callBack: SubFn, limit?: number): NatsSub;
     private _pre_sub_local_first;
     private _unsubscribe_fast;
     /**
      * 取消订阅
-     * @param sid 订阅编号
+     * @param sub 订阅编号
      * @param quantity
      */
-    unsubscribe(sid: string, quantity?: number): void;
+    unsubscribe(sub: string | NatsSub, quantity?: number): void;
     /**
      * 取消目标主题的订阅
      * @param subject 主题
@@ -126,6 +125,15 @@ declare type SubFn = (data: any, meta?: {
     sid: string;
     reply?: (replyData: any) => void;
 }) => void;
+export declare type NatsSub = {
+    subject: string;
+    sid: string;
+    fn: SubFn;
+    num?: number;
+    fast?: boolean;
+    queue?: string;
+    cancel: () => void;
+};
 /**
  * 服务器信息描述
  */
@@ -157,6 +165,8 @@ export interface NatsConfig {
     maxReconnectAttempts?: number;
     name?: string;
     noEcho?: boolean;
+    verbose?: boolean;
+    pedantic?: boolean;
     serizalize?: NatsSerizalize;
     json?: boolean;
     msgpack?: boolean;

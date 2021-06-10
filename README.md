@@ -21,16 +21,20 @@ nats-client nats客户端实现
  //多cluster接入    
  var nc = Nats.make({json:true,servers:["nats://127.0.0.1:4222","nats://127.0.0.1:4223","ws://127.0.0.1:8022"]});     
   
- nc.subscribe("svr.sum",function (data,meta) {  
+ var sub = nc.subscribe("svr.sum",function (data,meta) {  
      meta.reply(data.a+data.b);  
  });      
- console.log(nc.request("svr.sum",{a:2,b:3})==5)      
+ console.log(nc.request("svr.sum",{a:2,b:3})==5);      
+ nc.unsubscribe(sub);    
+ nc.unsubscribe(sub.sid);    
  
  nc.subscribe("svr.log",function (data,meta) {  
      console.log("svr.log",data);
  });  
  nc.publish("svr.log", "on xxx");    
- console.log(nc.ping())
+ console.log(nc.ping());    
+ //取消所有订阅
+ uc.unsubscribeAll();    
 </code>
 </pre> 
 
