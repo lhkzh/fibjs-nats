@@ -73,6 +73,7 @@ export declare class Nats extends events.EventEmitter {
      */
     subscribe(subject: string, callBack: SubFn, limit?: number): string;
     private _pre_sub_local_first;
+    private _unsubscribe_fast;
     /**
      * 取消订阅
      * @param sid 订阅编号
@@ -99,6 +100,9 @@ export declare class Nats extends events.EventEmitter {
      */
     publish(subject: string, payload?: any): void;
     publishInbox(subject: string, inbox: string, payload: any): void;
+    private _pub_blob_1;
+    private _pub_blob_2;
+    private _pub_blob_3;
     protected _send(payload: any, retryWhenReconnect: boolean): void;
     protected _on_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string): void;
     private _on_connect;

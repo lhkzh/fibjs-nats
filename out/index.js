@@ -205,32 +205,23 @@ class Nats extends events.EventEmitter {
      */
     requestAsync(subject, payload, timeoutTtl = 3000) {
         return new Promise((resolve, reject) => {
-            // try{
-            //     resolve(this.request(subject, payload, timeoutTtl));
-            // }catch (e) {
-            //     reject(e);
-            // }
-            let cbk;
-            let subs = this._subs, inbox = '_INBOX.' + Nuid_1.nuid.next(), timer = setTimeout(() => {
-                cbk(undefined, "nats_request_timeout:" + subject);
-            }, timeoutTtl);
-            cbk = (rsp, err) => {
+            let inbox = '_INBOX.' + Nuid_1.nuid.next(), cbk = (rsp, err) => {
                 clearTimeout(timer);
-                if (rsp === undefined) {
-                    subs.delete(sid);
-                    reject(err);
+                err ? reject(err) : resolve(rsp);
+            }, timer = setTimeout(() => {
+                try {
+                    this._unsubscribe_fast(subInfo.sid);
                 }
-                else {
-                    resolve(rsp);
+                catch (e) {
                 }
-            };
-            let [sid, buf] = this._pre_sub_local_first(inbox, cbk, true);
+                cbk(null, "nats_request_timeout:" + subject);
+            }, timeoutTtl);
+            let [subInfo, subCmdBuf] = this._pre_sub_local_first(inbox, cbk, true);
             try {
-                let pb = this.encode(payload);
-                this._send(Buffer.concat([buf, B_PUB, Buffer.from(subject), B_SPACE, Buffer.from(inbox), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), false);
+                this._send(this._pub_blob_3(subCmdBuf, subject, inbox, this.encode(payload)), false);
             }
             catch (e) {
-                cbk(undefined, e);
+                cbk(null, e);
             }
         });
     }
@@ -240,28 +231,24 @@ class Nats extends events.EventEmitter {
      * @param payload
      */
     request(subject, payload, timeoutTtl = 3000) {
-        let subs = this._subs, inbox = '_INBOX.' + Nuid_1.nuid.next(), evt = new WaitTimeoutEvt(timeoutTtl, `nats_request_timeout:${subject}`);
-        let [sid, buf] = this._pre_sub_local_first(inbox, evt.suc.bind(evt), true), send_ok;
+        let evt = new WaitTimeoutEvt(timeoutTtl), inbox = '_INBOX.' + Nuid_1.nuid.next();
+        let [subInfo, subCmdBuf] = this._pre_sub_local_first(inbox, evt.suc.bind(evt), true);
         try {
-            let pb = this.encode(payload);
-            this._send(Buffer.concat([buf, B_PUB, Buffer.from(subject), B_SPACE, Buffer.from(inbox), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), false);
-            send_ok = true;
+            this._send(this._pub_blob_3(subCmdBuf, subject, inbox, this.encode(payload)), false);
+            evt.wait();
         }
         catch (e) {
             evt.fail(e);
         }
-        evt.wait();
         if (evt.err) {
-            subs.delete(sid);
-        }
-        if (send_ok) {
             try {
-                this._send(Buffer.from(`UNSUB ${sid}${S_EOL}`), false);
+                this._unsubscribe_fast(subInfo.sid);
             }
             catch (e) {
             }
-        }
-        if (evt.err) {
+            if (evt.err === WaitTimeoutEvt.TimeOutErr) {
+                evt.err = new Error(`nats_request_timeout:${subject}`);
+            }
             throw evt.err;
         }
         return evt.rsp;
@@ -284,9 +271,9 @@ class Nats extends events.EventEmitter {
      * @returns 订阅的编号
      */
     subscribe(subject, callBack, limit) {
-        let [sid, buf] = this._pre_sub_local_first(subject, callBack, limit);
-        this._send(buf, true);
-        return sid;
+        let [subInfo, subCommdBuf] = this._pre_sub_local_first(subject, callBack, limit);
+        this._send(subCommdBuf, true);
+        return subInfo.sid;
     }
     _pre_sub_local_first(subject, callBack, limit) {
         let sid = Nuid_1.nuid.next();
@@ -302,7 +289,11 @@ class Nats extends events.EventEmitter {
             sobj.num = limit;
         }
         this._subs.set(sid, sobj);
-        return [sid, Buffer.from(`SUB ${subject} ${sid}${S_EOL}`), sobj];
+        return [sobj, Buffer.from(`SUB ${subject} ${sid}${S_EOL}`)];
+    }
+    _unsubscribe_fast(sid) {
+        this._subs.delete(sid);
+        this._send(Buffer.from(`UNSUB ${sid}${S_EOL}`), false);
     }
     /**
      * 取消订阅
@@ -311,13 +302,11 @@ class Nats extends events.EventEmitter {
      */
     unsubscribe(sid, quantity) {
         if (this._subs.has(sid)) {
-            let msg = Buffer.from(arguments.length > 1 ? `UNSUB ${sid} ${quantity}${S_EOL}` : `UNSUB ${sid}${S_EOL}`);
             if (arguments.length < 2) {
-                this._subs.delete(sid);
-                this._send(Buffer.from(msg), false);
+                this._unsubscribe_fast(sid);
             }
             else {
-                this._send(Buffer.from(msg), true);
+                this._send(Buffer.from(`UNSUB ${sid} ${quantity}${S_EOL}`), true);
             }
         }
     }
@@ -353,7 +342,7 @@ class Nats extends events.EventEmitter {
         for (let e of this._subs.values()) {
             barr.push(Buffer.from(`UNSUB ${e.sid}${S_EOL}`));
         }
-        if (barr.length) {
+        if (barr.length && this._connection) {
             this._send(Buffer.concat(barr), false);
         }
     }
@@ -378,12 +367,23 @@ class Nats extends events.EventEmitter {
      * @param payload 数据
      */
     publish(subject, payload) {
-        let pb = this.encode(payload);
-        this._send(Buffer.concat([B_PUB, Buffer.from(subject), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), true);
+        // let pb: Class_Buffer = this.encode(payload);this._send(Buffer.concat([B_PUB, Buffer.from(subject), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), true);
+        this._send(this._pub_blob_1(subject, this.encode(payload)), true);
     }
     publishInbox(subject, inbox, payload) {
-        let pb = this.encode(payload);
-        this._send(Buffer.concat([B_PUB, Buffer.from(subject), B_SPACE, Buffer.from(inbox), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), true);
+        this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), true);
+    }
+    _pub_blob_1(subject, pb) {
+        // this._send(Buffer.concat([B_PUB, Buffer.from(subject), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), true);
+        return Buffer.concat([Buffer.from(`${S_PUB} ${subject} ${pb.length} ${S_EOL}`), pb, B_EOL]);
+    }
+    _pub_blob_2(subject, inbox, pb) {
+        // return Buffer.concat([B_PUB, Buffer.from(subject), B_SPACE, Buffer.from(inbox), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]);
+        return Buffer.concat([Buffer.from(`${S_PUB} ${subject} ${inbox} ${pb.length} ${S_EOL}`), pb, B_EOL]);
+    }
+    _pub_blob_3(preCommandBuf, subject, inbox, pb) {
+        // return Buffer.concat([B_PUB, Buffer.from(subject), B_SPACE, Buffer.from(inbox), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]);
+        return Buffer.concat([preCommandBuf, Buffer.from(`${S_PUB} ${subject} ${inbox} ${pb.length} ${S_EOL}`), pb, B_EOL]);
     }
     _send(payload, retryWhenReconnect) {
         try {
@@ -406,7 +406,7 @@ class Nats extends events.EventEmitter {
             let data = payload.length > 0 ? this.decode(payload) : null;
             if (sop) {
                 if (sop.fast) {
-                    this._subs.delete(sid);
+                    this._unsubscribe_fast(sid);
                     sop.fn(data);
                 }
                 else {
@@ -421,7 +421,7 @@ class Nats extends events.EventEmitter {
                     }
                     if (sop.num > 0) {
                         if ((--sop.num) == 0) {
-                            this._subs.delete(sid);
+                            this._unsubscribe_fast(sid);
                         }
                     }
                     sop.fn(data, meta);
@@ -844,10 +844,10 @@ class WaitEvt extends coroutine.Event {
     }
 }
 class WaitTimeoutEvt extends WaitEvt {
-    constructor(timeout_ttl, timeout_reason) {
+    constructor(timeout_ttl) {
         super();
         this.t = setTimeout(() => {
-            this.fail(timeout_reason);
+            this.fail(WaitTimeoutEvt.TimeOutErr);
         }, timeout_ttl);
     }
     set() {
@@ -855,6 +855,7 @@ class WaitTimeoutEvt extends WaitEvt {
         super.set();
     }
 }
+WaitTimeoutEvt.TimeOutErr = new Error("wait_time_out_err");
 function convertToAddress(uri) {
     let obj = url_1.parse(uri);
     let itf = { ...DefaultAddress, url: String(uri) };
@@ -887,11 +888,11 @@ function convertToAddress(uri) {
 }
 const B_SPACE = Buffer.from(" ");
 const B_EOL = Buffer.from("\r\n");
-const B_PUB = Buffer.from("PUB ");
-const B_PUBLISH_EMPTY = Buffer.from(" 0\r\n\r\n");
+// const B_PUB = Buffer.from("PUB ");
 const B_PING_EOL = Buffer.from("PING\r\n");
 const B_PONG_EOL = Buffer.from("PONG\r\n");
 const S_EOL = "\r\n";
+const S_PUB = "PUB";
 const BIT_2_ERR = Buffer.from("-ERR")[2];
 const BIT_2_OK = Buffer.from("+OK")[2];
 const BIT_1_PING = Buffer.from('PING')[1];
