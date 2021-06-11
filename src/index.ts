@@ -104,7 +104,7 @@ export class Nats extends events.EventEmitter {
         try {
             evt = this._reConnetIng = new coroutine.Event();
             this.close();
-            this._do_connect(true);
+            this._do_connect(-1);
             this._reConnetIng = null;
             evt.set();
         } catch (e) {
@@ -115,9 +115,9 @@ export class Nats extends events.EventEmitter {
         }
     }
 
-    private _do_connect(isReconnect: boolean) {
+    private _do_connect(state:number) {
         let tmps = this._shuffle_server_list();
-        let retryNum = this._cfg.maxReconnectAttempts > 0 ? this._cfg.maxReconnectAttempts : 1;
+        let retryNum = state>0 ? state:(this._cfg.maxReconnectAttempts > 0 ? this._cfg.maxReconnectAttempts : 1);
         let suc_connection: NatsConnection;
         M:for (let i = 0; i < retryNum * tmps.length; i++) {
             for (let j = 0; j < tmps.length; j++) {
@@ -146,7 +146,7 @@ export class Nats extends events.EventEmitter {
             console.warn("nats|connect", err.message);
             throw err;
         } else {
-            this._on_connect(suc_connection, isReconnect);
+            this._on_connect(suc_connection, state<0);
             return this;
         }
     }
@@ -173,7 +173,7 @@ export class Nats extends events.EventEmitter {
         if (this._connection) {
             return this;
         }
-        this._do_connect(false);
+        this._do_connect(0);
         return this;
     }
 
@@ -528,7 +528,7 @@ export class Nats extends events.EventEmitter {
 
 
     //构建一个-并主动链接
-    public static make(cfg?: string | NatsAddress | NatsConnectCfg) {
+    public static make(cfg?: string | NatsAddress | NatsConnectCfg, tryInitRetryNum:number=9) {
         let imp = new Nats();
         let conf: NatsConfig;
         if (typeof (cfg) == "string") {
@@ -556,7 +556,7 @@ export class Nats extends events.EventEmitter {
                 imp._cfg.serizalize = NatsSerizalize_Buf;
             }
         }
-        return imp._do_connect(false);
+        return imp._do_connect(Math.max(2,tryInitRetryNum));
     }
 }
 

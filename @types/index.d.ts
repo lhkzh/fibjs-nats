@@ -111,7 +111,7 @@ export declare class Nats extends events.EventEmitter {
     protected _on_pong(is_lost: boolean): void;
     protected encode(payload: any): Class_Buffer;
     protected decode(data: Class_Buffer): any;
-    static make(cfg?: string | NatsAddress | NatsConnectCfg): Nats;
+    static make(cfg?: string | NatsAddress | NatsConnectCfg, tryInitRetryNum?: number): Nats;
 }
 export declare class NatsEvent {
     static OnConnect: string;
