@@ -8,6 +8,7 @@ const events = require("events");
 const net = require("net");
 const ws = require("ws");
 const ssl = require("ssl");
+const crypto = require("crypto");
 const Nuid_1 = require("./Nuid");
 const encoding_1 = require("encoding");
 const url_1 = require("url");
@@ -710,7 +711,6 @@ class NatsSocket extends NatsConnection {
     constructor(_sock, _cfg, _addr, _info) {
         super(_cfg, _addr, _info);
         this._sock = _sock;
-        _sock.timeout = 0;
         this._lock = new coroutine.Lock();
         this._state = 1;
         this._reader = coroutine.start(() => {
@@ -737,7 +737,7 @@ class NatsSocket extends NatsConnection {
         // global["log"]("<--("+payload.toString()+")\n");
         try {
             this._lock.acquire();
-            this._sock.send(payload);
+            this._sock.write(payload);
             this._lock.release();
         }
         catch (e) {
@@ -749,9 +749,25 @@ class NatsSocket extends NatsConnection {
     _fn_close() {
         this._sock.close();
     }
+    static wrapSsl(conn, cfg) {
+        // let arr = [];
+        // let tmp = Array.isArray(cfg.ssl) ? <Array<{name?:string,crt?:string,key?:string}>>cfg.ssl:[cfg.ssl];
+        // tmp.forEach(e=>{
+        //    let x509 = crypto.loadCert(e.crt);
+        //    let pkey = crypto.loadPKey(e.key);
+        //    arr.push(e.name ? {name:e.name, x509:x509, pkey:pkey}:{x509:x509, pkey:pkey});
+        // });
+        // let sock = new ssl.Socket(arr);
+        let sock = new ssl.Socket(crypto.loadCert(cfg.ssl.crt), crypto.loadPKey(cfg.ssl.key));
+        let v = sock.connect(conn);
+        if (v != 0) {
+            console.warn("wrapSsl_verify_fail", v);
+        }
+        return sock;
+    }
     static connect(addr, cfg) {
-        let sock = new net.Socket(net.AF_INET), stream;
-        let url_obj = url_1.parse(addr.url);
+        let sock;
+        let url_obj = url_1.parse(addr.url), addr_str = url_obj.hostname + ":" + (parseInt(url_obj.port) || 4222), addr_timeout = cfg.timeout > 0 ? cfg.timeout : 0;
         let fn_close = () => {
             try {
                 sock.close();
@@ -760,22 +776,23 @@ class NatsSocket extends NatsConnection {
             }
         };
         try {
-            if (cfg.timeout > 0) {
-                sock.timeout = cfg.timeout;
-            }
-            sock.connect(url_obj.hostname, parseInt(url_obj.port) || 4222);
-            stream = new io_1.BufferedStream(sock);
+            sock = net.connect("tcp://" + addr_str, addr_timeout);
+            sock.timeout = 0;
+            let stream = new io_1.BufferedStream(sock);
             stream.EOL = S_EOL;
             let info = stream.readLine(512);
             if (info == null) {
                 fn_close();
                 throw new Error("closed_while_reading_info");
             }
-            sock.send(this.buildConnectCmd(addr, cfg));
+            if (cfg.ssl) {
+                sock = this.wrapSsl(sock, cfg);
+            }
+            sock.write(this.buildConnectCmd(addr, cfg));
             return new NatsSocket(sock, cfg, addr, JSON.parse(info.toString().split(" ")[1]));
         }
         catch (e) {
-            sock.close();
+            sock && sock.close();
             console.error('Nats|open_fail', addr.url, e.message);
         }
         return null;
@@ -807,11 +824,11 @@ class NatsWebsocket extends NatsConnection {
         this._sock.close();
     }
     static connect(addr, cfg) {
-        if (addr.url.startsWith("wss")) {
-            ssl.loadRootCerts();
-            // @ts-ignore
-            ssl.verification = ssl.VERIFY_NONE;
-        }
+        // if (addr.url.startsWith("wss")) {
+        //     ssl.loadRootCerts();
+        //     // @ts-ignore
+        //     ssl.verification = ssl.VERIFY_NONE;
+        // }
         let sock = new ws.Socket(addr.url, { perMessageDeflate: false });
         let svr_info;
         let open_evt = new coroutine.Event();

@@ -6,6 +6,7 @@ import * as events from "events";
 import * as net from "net";
 import * as ws from "ws";
 import * as ssl from "ssl";
+import * as crypto from "crypto";
 import {nuid} from "./Nuid";
 import {msgpack} from "encoding";
 import {parse} from "url";
@@ -623,7 +624,10 @@ export interface NatsConfig {
     //序列化方式
     serizalize?: NatsSerizalize,
     json?: boolean,
-    msgpack?: boolean
+    msgpack?: boolean,
+
+    //tls证书配置
+    ssl?:{name?:string,crt?:string,key?:string}
 }
 
 type NatsConnectCfg_Mult = NatsConfig & { servers?: Array<string | NatsAddress> };
@@ -811,7 +815,6 @@ class NatsSocket extends NatsConnection {
 
     constructor(private _sock: Class_Socket, _cfg: NatsConfig, _addr: NatsAddress, _info: NatsServerInfo) {
         super(_cfg, _addr, _info);
-        _sock.timeout = 0;
         this._lock = new coroutine.Lock();
         this._state = 1;
         this._reader = coroutine.start(() => {
@@ -837,7 +840,7 @@ class NatsSocket extends NatsConnection {
         // global["log"]("<--("+payload.toString()+")\n");
         try {
             this._lock.acquire();
-            this._sock.send(payload);
+            this._sock.write(payload);
             this._lock.release();
         } catch (e) {
             this._lock.release();
@@ -849,10 +852,26 @@ class NatsSocket extends NatsConnection {
     protected _fn_close() {
         this._sock.close();
     }
+    private static wrapSsl(conn:Class_Socket, cfg:NatsConfig){
+        // let arr = [];
+        // let tmp = Array.isArray(cfg.ssl) ? <Array<{name?:string,crt?:string,key?:string}>>cfg.ssl:[cfg.ssl];
+        // tmp.forEach(e=>{
+        //    let x509 = crypto.loadCert(e.crt);
+        //    let pkey = crypto.loadPKey(e.key);
+        //    arr.push(e.name ? {name:e.name, x509:x509, pkey:pkey}:{x509:x509, pkey:pkey});
+        // });
+        // let sock = new ssl.Socket(arr);
+        let sock = new ssl.Socket(crypto.loadCert(cfg.ssl.crt), crypto.loadPKey(cfg.ssl.key));
+        let v = sock.connect(conn);
+        if(v!=0){
+            console.warn("wrapSsl_verify_fail", v);
+        }
+        return <any>sock;
+    }
 
     public static connect(addr: NatsAddress, cfg: NatsConfig): NatsConnection {
-        let sock = new net.Socket(net.AF_INET), stream: Class_BufferedStream;
-        let url_obj = parse(addr.url);
+        let sock:Class_Socket;
+        let url_obj = parse(addr.url), addr_str=url_obj.hostname+":"+(parseInt(url_obj.port) || 4222), addr_timeout = cfg.timeout>0?cfg.timeout:0;
         let fn_close = () => {
             try {
                 sock.close();
@@ -860,21 +879,22 @@ class NatsSocket extends NatsConnection {
             }
         }
         try {
-            if (cfg.timeout > 0) {
-                sock.timeout = cfg.timeout;
-            }
-            sock.connect(url_obj.hostname, parseInt(url_obj.port) || 4222);
-            stream = new BufferedStream(sock);
+            sock = <any>net.connect("tcp://"+addr_str, addr_timeout);
+            sock.timeout = 0;
+            let stream = new BufferedStream(sock);
             stream.EOL = S_EOL;
             let info = stream.readLine(512);
             if (info == null) {
                 fn_close();
                 throw new Error("closed_while_reading_info");
             }
-            sock.send(this.buildConnectCmd(addr, cfg));
+            if(cfg.ssl){
+                sock = this.wrapSsl(sock, cfg);
+            }
+            sock.write(this.buildConnectCmd(addr, cfg));
             return new NatsSocket(sock, cfg, addr, JSON.parse(info.toString().split(" ")[1]));
         } catch (e) {
-            sock.close();
+            sock && sock.close();
             console.error('Nats|open_fail', addr.url, e.message);
         }
         return null;
@@ -908,11 +928,11 @@ class NatsWebsocket extends NatsConnection {
     }
 
     public static connect(addr: NatsAddress, cfg: NatsConfig): NatsConnection {
-        if (addr.url.startsWith("wss")) {
-            ssl.loadRootCerts();
-            // @ts-ignore
-            ssl.verification = ssl.VERIFY_NONE;
-        }
+        // if (addr.url.startsWith("wss")) {
+        //     ssl.loadRootCerts();
+        //     // @ts-ignore
+        //     ssl.verification = ssl.VERIFY_NONE;
+        // }
         let sock = new ws.Socket(addr.url, {perMessageDeflate: false});
         let svr_info: any;
         let open_evt = new coroutine.Event();

@@ -170,6 +170,11 @@ export interface NatsConfig {
     serizalize?: NatsSerizalize;
     json?: boolean;
     msgpack?: boolean;
+    ssl?: {
+        name?: string;
+        crt?: string;
+        key?: string;
+    };
 }
 declare type NatsConnectCfg_Mult = NatsConfig & {
     servers?: Array<string | NatsAddress>;
