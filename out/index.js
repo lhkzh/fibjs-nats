@@ -687,9 +687,9 @@ class NatsConnection extends events_1.EventEmitter {
             this._last = buf.slice(offset);
         }
     }
-    static buildConnectCmd(addr, cfg) {
+    static buildConnectCmd(addr, cfg, server_info) {
         let opt = {
-            ssl_required: false,
+            ssl_required: cfg.ssl ? true : false,
             name: cfg.name,
             lang: exports.LANG,
             version: exports.VERSION,
@@ -697,6 +697,10 @@ class NatsConnection extends events_1.EventEmitter {
             verbose: cfg.verbose,
             pedantic: cfg.pedantic,
         };
+        if (server_info.headers) {
+            opt.headers = true;
+            opt.no_responders = true;
+        }
         if (addr.user && addr.pass) {
             opt.user = addr.user;
             opt.pass = addr.pass;
@@ -781,16 +785,17 @@ class NatsSocket extends NatsConnection {
             sock.timeout = 0;
             let stream = new io_1.BufferedStream(sock);
             stream.EOL = S_EOL;
-            let info = stream.readLine(512);
-            if (info == null) {
+            let infoStr = stream.readLine(512);
+            if (infoStr == null) {
                 fn_close();
                 throw new Error("closed_while_reading_info");
             }
+            let info = JSON.parse(JSON.parse(infoStr.toString().split(" ")[1]));
             if (cfg.ssl) {
                 sock = this.wrapSsl(sock, cfg);
             }
-            sock.write(this.buildConnectCmd(addr, cfg));
-            return new NatsSocket(sock, cfg, addr, JSON.parse(info.toString().split(" ")[1]));
+            sock.write(this.buildConnectCmd(addr, cfg, info));
+            return new NatsSocket(sock, cfg, addr, info);
         }
         catch (e) {
             sock && sock.close();
@@ -839,7 +844,7 @@ class NatsWebsocket extends NatsConnection {
             open_evt.set();
             sock.once("message", e => {
                 svr_info = JSON.parse(e.data.toString().replace("INFO ", "").trim());
-                sock.send(this.buildConnectCmd(addr, cfg));
+                sock.send(this.buildConnectCmd(addr, cfg, svr_info));
                 open_evt.set();
             });
             sock.once("close", e => {
@@ -922,7 +927,7 @@ function convertToAddress(uri) {
     itf.url = obj.protocol + "//" + auth_str + obj.hostname + ":" + (parseInt(obj.port) || 4222);
     return itf;
 }
-const B_SPACE = Buffer.from(" ");
+// const B_SPACE = Buffer.from(" ");
 const B_EOL = Buffer.from("\r\n");
 // const B_PUB = Buffer.from("PUB ");
 const B_PING_EOL = Buffer.from("PING\r\n");
