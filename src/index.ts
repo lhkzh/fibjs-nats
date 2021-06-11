@@ -13,6 +13,7 @@ import {parse} from "url";
 import * as queryString from "querystring";
 import {EventEmitter} from "events";
 import {BufferedStream, MemoryStream} from "io";
+import * as http from "http";
 
 export const VERSION = "1.1.2";
 export const LANG = "fibjs";
@@ -142,7 +143,7 @@ export class Nats extends events.EventEmitter {
         if (suc_connection == null) {
             this.emit(NatsEvent.OnError, "connect_nats_fail", JSON.stringify(this._serverList));
             let err = new Error("connect_nats_fail");
-            console.log("nats|connect", err.message);
+            console.warn("nats|connect", err.message);
             throw err;
         } else {
             this._on_connect(suc_connection, isReconnect);
@@ -318,8 +319,8 @@ export class Nats extends events.EventEmitter {
      * @param sub 订阅编号
      * @param quantity
      */
-    public unsubscribe(sub: string|NatsSub, quantity?: number) {
-        let sid = (<NatsSub>sub).sid ? (<NatsSub>sub).sid:<string>sub;
+    public unsubscribe(sub: string | NatsSub, quantity?: number) {
+        let sid = (<NatsSub>sub).sid ? (<NatsSub>sub).sid : <string>sub;
         if (this._subs.has(sid)) {
             if (arguments.length < 2) {
                 this._unsubscribe_fast(sid);
@@ -578,12 +579,23 @@ export type NatsSub = { subject: string, sid: string, fn: SubFn, num?: number, f
  */
 export interface NatsServerInfo {
     server_id: string;
+    server_name: string;
     version: string;
+    proto: number,
     go: string;
     max_payload: number;
-    client_id: number;
+    tls_required: boolean;
+    tls_verify: boolean;
+
     host: string;
     port: number;
+    client_id: number;
+    client_ip: string,
+
+    headers: boolean,
+    auth_required?: boolean;
+    nonce?: string;
+
 }
 
 /**
@@ -627,7 +639,10 @@ export interface NatsConfig {
     msgpack?: boolean,
 
     //tls证书配置
-    ssl?:{name?:string,ca?:string,cert?:string,key?:string}
+    ssl?: { name?: string, ca?: string, cert?: string, key?: string },
+
+    //特殊认证
+    authenticator?: (nonce?: string) => { nkey?: string, sig: string, jwt?: string, auth_token?: string, user?: string, pass?: string },
 }
 
 type NatsConnectCfg_Mult = NatsConfig & { servers?: Array<string | NatsAddress> };
@@ -789,25 +804,34 @@ abstract class NatsConnection extends EventEmitter {
         }
     }
 
-    protected static buildConnectCmd(addr: NatsAddress, cfg: NatsConfig, server_info: any) {
+    protected static buildConnectCmd(addr: NatsAddress, cfg: NatsConfig, server_info: NatsServerInfo) {
         let opt: any = {
-            ssl_required: cfg.ssl?true:false,
+            ssl_required: server_info.tls_required && (cfg.ssl ? true : false),
             name: cfg.name,
             lang: LANG,
             version: VERSION,
             noEcho: cfg.noEcho,
             verbose: cfg.verbose,
             pedantic: cfg.pedantic,
-        }
-        if(server_info.headers) {
+            protocol: server_info.proto,
+        };
+        if (server_info.headers) {
             opt.headers = true;
             opt.no_responders = true;
         }
-        if (addr.user && addr.pass) {
-            opt.user = addr.user;
-            opt.pass = addr.pass;
-        } else if (addr.token) {
-            opt.auth_token = addr.token;
+        if (server_info.auth_required) {
+            if (cfg.authenticator) {
+                //nkey sig jwt
+                let tmp = <any>cfg.authenticator(server_info.nonce);
+                for (var k in tmp) {
+                    opt[k] = tmp[k];
+                }
+            } else if (addr.user && addr.pass) {
+                opt.user = addr.user;
+                opt.pass = addr.pass;
+            } else if (addr.token) {
+                opt.auth_token = addr.token;
+            }
         }
         return Buffer.from(`CONNECT ${JSON.stringify(opt)}\r\n`);
     }
@@ -856,34 +880,40 @@ class NatsSocket extends NatsConnection {
     protected _fn_close() {
         this._sock.close();
     }
-    private static wrapSsl(conn:Class_Socket, cfg:NatsConfig){
+
+    private static wrapSsl(conn: Class_Socket, cfg: NatsConfig) {
+        if (!cfg.ssl) {
+            throw new Error("Nats_no_ssl_config");
+        }
         let sock = new ssl.Socket(crypto.loadCert(cfg.ssl.cert), crypto.loadPKey(cfg.ssl.key));
-        if(cfg.ssl.ca){
+        if (cfg.ssl.ca) {
             ssl.ca.loadFile(cfg.ssl.ca);
-        }else{
+        } else {
             ssl.loadRootCerts();
         }
-        if(!cfg.ssl.ca){
+        if (!cfg.ssl.ca) {
             sock.verification = ssl.VERIFY_OPTIONAL;
         }
         let v = sock.connect(conn);
-        if(v!=0){
+        if (v != 0) {
             console.warn("Nats:SSL_verify_fail=%d", v);
         }
         return <any>sock;
     }
 
     public static connect(addr: NatsAddress, cfg: NatsConfig): NatsConnection {
-        let sock:Class_Socket;
-        let url_obj = parse(addr.url), addr_str=url_obj.hostname+":"+(parseInt(url_obj.port) || 4222), addr_timeout = cfg.timeout>0?cfg.timeout:0;
+        let sock: Class_Socket;
+        let url_obj = parse(addr.url), addr_str = url_obj.hostname + ":" + (parseInt(url_obj.port) || 4222),
+            addr_timeout = cfg.timeout > 0 ? cfg.timeout : 0;
         let fn_close = () => {
             try {
                 sock.close();
             } catch (e) {
             }
         }
+        let info: NatsServerInfo, auth_err: Error;
         try {
-            sock = <any>net.connect("tcp://"+addr_str, addr_timeout);
+            sock = <any>net.connect("tcp://" + addr_str, addr_timeout);
             sock.timeout = 0;
             let stream = new BufferedStream(sock);
             stream.EOL = S_EOL;
@@ -892,15 +922,29 @@ class NatsSocket extends NatsConnection {
                 fn_close();
                 throw new Error("closed_while_reading_info");
             }
-            let info = JSON.parse(JSON.parse(infoStr.toString().split(" ")[1]));
-            if(cfg.ssl){
+            info = JSON.parse(infoStr.toString().split(" ")[1]);
+            if (info.tls_required) {
                 sock = this.wrapSsl(sock, cfg);
+                stream = new BufferedStream(sock);
+                stream.EOL = S_EOL;
             }
             sock.write(this.buildConnectCmd(addr, cfg, info));
+            if (info.auth_required) {
+                stream.writeText("PING\r\n");
+                let str = stream.readLine();
+                if (str.startsWith("-ERR")) {
+                    auth_err = new Error(str.substr(4));
+                    throw auth_err;
+                }
+            }
             return new NatsSocket(sock, cfg, addr, info);
         } catch (e) {
             sock && sock.close();
-            console.error('Nats|open_fail', addr.url, e.message);
+            if (info && info.auth_required) {
+                console.error('Nats|open_auth_err,%s,%s', addr.url, e.message);
+            } else {
+                console.error('Nats|open_io_err,%s,%s', addr.url, e.message);
+            }
         }
         return null;
     }
@@ -933,13 +977,24 @@ class NatsWebsocket extends NatsConnection {
     }
 
     public static connect(addr: NatsAddress, cfg: NatsConfig): NatsConnection {
-        // if (addr.url.startsWith("wss")) {
-        //     ssl.loadRootCerts();
-        //     // @ts-ignore
-        //     ssl.verification = ssl.VERIFY_NONE;
-        // }
-        let sock = new ws.Socket(addr.url, {perMessageDeflate: false});
-        let svr_info: any;
+        let sock: Class_WebSocket;
+        if (addr.url.startsWith("wss")) {
+            let hc = new http.Client();
+            hc.poolSize = 0;
+            hc.sslVerification = ssl.VERIFY_OPTIONAL;
+            if (cfg.ssl) {
+                if (cfg.ssl.ca) {
+                    ssl.ca.loadFile(cfg.ssl.ca);
+                } else {
+                    ssl.loadRootCerts();
+                }
+                hc.setClientCert(crypto.loadCert(cfg.ssl.cert), crypto.loadPKey(cfg.ssl.key));
+            }
+            sock = new ws.Socket(addr.url, {perMessageDeflate: false, httpClient: hc});
+        } else {
+            sock = new ws.Socket(addr.url, {perMessageDeflate: false});
+        }
+        let svr_info: NatsServerInfo;
         let open_evt = new coroutine.Event();
         let err_info: string = null;
         sock.once("open", e => {
@@ -948,9 +1003,23 @@ class NatsWebsocket extends NatsConnection {
             sock.once("message", e => {
                 svr_info = JSON.parse(e.data.toString().replace("INFO ", "").trim());
                 sock.send(this.buildConnectCmd(addr, cfg, svr_info));
-                open_evt.set();
+                if (!svr_info.auth_required) {
+                    open_evt.set();
+                } else {
+                    sock.once("message", e => {
+                        let tmp = e.data.toString();
+                        if (tmp.includes("-ERR")) {
+                            svr_info = null;
+                            err_info = tmp.replace("-ERR", "").trim();
+                            sock.off("close");
+                        }
+                        open_evt.set();
+                    });
+                    sock.send(Buffer.from("PING\r\n"));
+                }
             });
             sock.once("close", e => {
+                svr_info = null;
                 err_info = "closed_while_reading_info";
                 open_evt.set();
             });
@@ -962,6 +1031,9 @@ class NatsWebsocket extends NatsConnection {
         open_evt.wait();
         if (!err_info) {
             if (!svr_info) {
+                open_evt.clear();
+                open_evt.wait();
+            } else if (svr_info.auth_required) {
                 open_evt.clear();
                 open_evt.wait();
             }

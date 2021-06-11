@@ -15,6 +15,7 @@ const url_1 = require("url");
 const queryString = require("querystring");
 const events_1 = require("events");
 const io_1 = require("io");
+const http = require("http");
 exports.VERSION = "1.1.2";
 exports.LANG = "fibjs";
 /**
@@ -132,7 +133,7 @@ class Nats extends events.EventEmitter {
         if (suc_connection == null) {
             this.emit(NatsEvent.OnError, "connect_nats_fail", JSON.stringify(this._serverList));
             let err = new Error("connect_nats_fail");
-            console.log("nats|connect", err.message);
+            console.warn("nats|connect", err.message);
             throw err;
         }
         else {
@@ -689,24 +690,34 @@ class NatsConnection extends events_1.EventEmitter {
     }
     static buildConnectCmd(addr, cfg, server_info) {
         let opt = {
-            ssl_required: cfg.ssl ? true : false,
+            ssl_required: server_info.tls_required && (cfg.ssl ? true : false),
             name: cfg.name,
             lang: exports.LANG,
             version: exports.VERSION,
             noEcho: cfg.noEcho,
             verbose: cfg.verbose,
             pedantic: cfg.pedantic,
+            protocol: server_info.proto,
         };
         if (server_info.headers) {
             opt.headers = true;
             opt.no_responders = true;
         }
-        if (addr.user && addr.pass) {
-            opt.user = addr.user;
-            opt.pass = addr.pass;
-        }
-        else if (addr.token) {
-            opt.auth_token = addr.token;
+        if (server_info.auth_required) {
+            if (cfg.authenticator) {
+                //nkey sig jwt
+                let tmp = cfg.authenticator(server_info.nonce);
+                for (var k in tmp) {
+                    opt[k] = tmp[k];
+                }
+            }
+            else if (addr.user && addr.pass) {
+                opt.user = addr.user;
+                opt.pass = addr.pass;
+            }
+            else if (addr.token) {
+                opt.auth_token = addr.token;
+            }
         }
         return Buffer.from(`CONNECT ${JSON.stringify(opt)}\r\n`);
     }
@@ -754,6 +765,9 @@ class NatsSocket extends NatsConnection {
         this._sock.close();
     }
     static wrapSsl(conn, cfg) {
+        if (!cfg.ssl) {
+            throw new Error("Nats_no_ssl_config");
+        }
         let sock = new ssl.Socket(crypto.loadCert(cfg.ssl.cert), crypto.loadPKey(cfg.ssl.key));
         if (cfg.ssl.ca) {
             ssl.ca.loadFile(cfg.ssl.ca);
@@ -780,6 +794,7 @@ class NatsSocket extends NatsConnection {
             catch (e) {
             }
         };
+        let info, auth_err;
         try {
             sock = net.connect("tcp://" + addr_str, addr_timeout);
             sock.timeout = 0;
@@ -790,16 +805,31 @@ class NatsSocket extends NatsConnection {
                 fn_close();
                 throw new Error("closed_while_reading_info");
             }
-            let info = JSON.parse(JSON.parse(infoStr.toString().split(" ")[1]));
-            if (cfg.ssl) {
+            info = JSON.parse(infoStr.toString().split(" ")[1]);
+            if (info.tls_required) {
                 sock = this.wrapSsl(sock, cfg);
+                stream = new io_1.BufferedStream(sock);
+                stream.EOL = S_EOL;
             }
             sock.write(this.buildConnectCmd(addr, cfg, info));
+            if (info.auth_required) {
+                stream.writeText("PING\r\n");
+                let str = stream.readLine();
+                if (str.startsWith("-ERR")) {
+                    auth_err = new Error(str.substr(4));
+                    throw auth_err;
+                }
+            }
             return new NatsSocket(sock, cfg, addr, info);
         }
         catch (e) {
             sock && sock.close();
-            console.error('Nats|open_fail', addr.url, e.message);
+            if (info && info.auth_required) {
+                console.error('Nats|open_auth_err,%s,%s', addr.url, e.message);
+            }
+            else {
+                console.error('Nats|open_io_err,%s,%s', addr.url, e.message);
+            }
         }
         return null;
     }
@@ -830,12 +860,25 @@ class NatsWebsocket extends NatsConnection {
         this._sock.close();
     }
     static connect(addr, cfg) {
-        // if (addr.url.startsWith("wss")) {
-        //     ssl.loadRootCerts();
-        //     // @ts-ignore
-        //     ssl.verification = ssl.VERIFY_NONE;
-        // }
-        let sock = new ws.Socket(addr.url, { perMessageDeflate: false });
+        let sock;
+        if (addr.url.startsWith("wss")) {
+            let hc = new http.Client();
+            hc.poolSize = 0;
+            hc.sslVerification = ssl.VERIFY_OPTIONAL;
+            if (cfg.ssl) {
+                if (cfg.ssl.ca) {
+                    ssl.ca.loadFile(cfg.ssl.ca);
+                }
+                else {
+                    ssl.loadRootCerts();
+                }
+                hc.setClientCert(crypto.loadCert(cfg.ssl.cert), crypto.loadPKey(cfg.ssl.key));
+            }
+            sock = new ws.Socket(addr.url, { perMessageDeflate: false, httpClient: hc });
+        }
+        else {
+            sock = new ws.Socket(addr.url, { perMessageDeflate: false });
+        }
         let svr_info;
         let open_evt = new coroutine.Event();
         let err_info = null;
@@ -845,9 +888,24 @@ class NatsWebsocket extends NatsConnection {
             sock.once("message", e => {
                 svr_info = JSON.parse(e.data.toString().replace("INFO ", "").trim());
                 sock.send(this.buildConnectCmd(addr, cfg, svr_info));
-                open_evt.set();
+                if (!svr_info.auth_required) {
+                    open_evt.set();
+                }
+                else {
+                    sock.once("message", e => {
+                        let tmp = e.data.toString();
+                        if (tmp.includes("-ERR")) {
+                            svr_info = null;
+                            err_info = tmp.replace("-ERR", "").trim();
+                            sock.off("close");
+                        }
+                        open_evt.set();
+                    });
+                    sock.send(Buffer.from("PING\r\n"));
+                }
             });
             sock.once("close", e => {
+                svr_info = null;
                 err_info = "closed_while_reading_info";
                 open_evt.set();
             });
@@ -859,6 +917,10 @@ class NatsWebsocket extends NatsConnection {
         open_evt.wait();
         if (!err_info) {
             if (!svr_info) {
+                open_evt.clear();
+                open_evt.wait();
+            }
+            else if (svr_info.auth_required) {
                 open_evt.clear();
                 open_evt.wait();
             }

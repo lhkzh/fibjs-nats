@@ -139,12 +139,20 @@ export declare type NatsSub = {
  */
 export interface NatsServerInfo {
     server_id: string;
+    server_name: string;
     version: string;
+    proto: number;
     go: string;
     max_payload: number;
-    client_id: number;
+    tls_required: boolean;
+    tls_verify: boolean;
     host: string;
     port: number;
+    client_id: number;
+    client_ip: string;
+    headers: boolean;
+    auth_required?: boolean;
+    nonce?: string;
 }
 /**
  * 服务器地址配置
@@ -175,6 +183,14 @@ export interface NatsConfig {
         ca?: string;
         cert?: string;
         key?: string;
+    };
+    authenticator?: (nonce?: string) => {
+        nkey?: string;
+        sig: string;
+        jwt?: string;
+        auth_token?: string;
+        user?: string;
+        pass?: string;
     };
 }
 declare type NatsConnectCfg_Mult = NatsConfig & {
