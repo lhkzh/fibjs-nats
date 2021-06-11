@@ -13,7 +13,7 @@ nats-client 针对fibjs的nats客户端实现
  //无授权认证方式
  var nc = Nats.make({json:true,url:"nats://127.0.0.1:4222"});    
  //tls认证方式
- var nc = Nats.make({json:true,url:"nats://127.0.0.1:4222",ssl:{crt:"/nats/certs/client.pem",key:crt:"/nats/certs/client-key.pem"}});  
+ var nc = Nats.make({json:true,url:"nats://127.0.0.1:4222",ssl:{cert:"/nats/certs/client.pem",key:crt:"/nats/certs/client-key.pem"}});  
  //通过-username:password认证
  var nc_auth_userpassword = Nats.make({json:true,url:"nats://myusername:mypassword@127.0.0.1:4222"});  
  //通过-authtoken认证

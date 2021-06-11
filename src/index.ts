@@ -627,7 +627,7 @@ export interface NatsConfig {
     msgpack?: boolean,
 
     //tls证书配置
-    ssl?:{name?:string,crt?:string,key?:string}
+    ssl?:{name?:string,ca?:string,cert?:string,key?:string}
 }
 
 type NatsConnectCfg_Mult = NatsConfig & { servers?: Array<string | NatsAddress> };
@@ -853,18 +853,18 @@ class NatsSocket extends NatsConnection {
         this._sock.close();
     }
     private static wrapSsl(conn:Class_Socket, cfg:NatsConfig){
-        // let arr = [];
-        // let tmp = Array.isArray(cfg.ssl) ? <Array<{name?:string,crt?:string,key?:string}>>cfg.ssl:[cfg.ssl];
-        // tmp.forEach(e=>{
-        //    let x509 = crypto.loadCert(e.crt);
-        //    let pkey = crypto.loadPKey(e.key);
-        //    arr.push(e.name ? {name:e.name, x509:x509, pkey:pkey}:{x509:x509, pkey:pkey});
-        // });
-        // let sock = new ssl.Socket(arr);
-        let sock = new ssl.Socket(crypto.loadCert(cfg.ssl.crt), crypto.loadPKey(cfg.ssl.key));
+        let sock = new ssl.Socket(crypto.loadCert(cfg.ssl.cert), crypto.loadPKey(cfg.ssl.key));
+        if(cfg.ssl.ca){
+            ssl.ca.loadFile(cfg.ssl.ca);
+        }else{
+            ssl.loadRootCerts();
+        }
+        if(!cfg.ssl.ca){
+            sock.verification = ssl.VERIFY_OPTIONAL;
+        }
         let v = sock.connect(conn);
         if(v!=0){
-            console.warn("wrapSsl_verify_fail", v);
+            console.warn("Nats:SSL_verify_fail=%d", v);
         }
         return <any>sock;
     }

@@ -172,7 +172,8 @@ export interface NatsConfig {
     msgpack?: boolean;
     ssl?: {
         name?: string;
-        crt?: string;
+        ca?: string;
+        cert?: string;
         key?: string;
     };
 }
