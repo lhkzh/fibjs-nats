@@ -447,11 +447,11 @@ export class Nats extends events.EventEmitter {
                         }
                     }
                     sop.fn(data, meta);
+                    this.emit(subject, data);
                 }
             } else if (inbox) {//队列选了当前执行节点，但是当前节点给取消订阅了
                 this.publishInbox(subject, inbox, payload);
             }
-            this.emit(subject, data);
         } catch (e) {
             console.error("nats|on_msg", e);
         }
@@ -556,7 +556,7 @@ export class Nats extends events.EventEmitter {
                 imp._cfg.serizalize = NatsSerizalize_Buf;
             }
         }
-        return imp._do_connect(Math.max(2,tryInitRetryNum));
+        return imp._do_connect(Math.max(1,tryInitRetryNum));
     }
 }
 
@@ -595,7 +595,6 @@ export interface NatsServerInfo {
     headers: boolean,
     auth_required?: boolean;
     nonce?: string;
-
 }
 
 /**
@@ -829,8 +828,13 @@ abstract class NatsConnection extends EventEmitter {
             } else if (addr.user && addr.pass) {
                 opt.user = addr.user;
                 opt.pass = addr.pass;
-            } else if (addr.token) {
-                opt.auth_token = addr.token;
+            } else {
+                if (addr.token) {
+                    opt.auth_token = addr.token;
+                }
+                if (addr.user) {
+                    opt.user = addr.user;
+                }
             }
         }
         return Buffer.from(`CONNECT ${JSON.stringify(opt)}\r\n`);
@@ -1087,8 +1091,10 @@ function convertToAddress(uri: string) {
     let itf: NatsAddress = {...DefaultAddress, url: String(uri)};
     if (obj.query) {
         let query = queryString.parse(obj.query);
-        if (query.first("user") && query.first("pass")) {
+        if (query.first("user")) {
             itf.user = query.first("user");
+        }
+        if(query.first("pass")){
             itf.pass = query.first("pass");
         }
         if (query.first("token")) {
@@ -1097,6 +1103,9 @@ function convertToAddress(uri: string) {
     }
     if (!itf.token && obj.auth && !obj.password) {
         itf.token = obj.auth;
+        if(obj.username){
+            itf.user = obj.username;
+        }
     } else if (!itf.user && obj.username && obj.password) {
         itf.user = obj.username;
         itf.pass = obj.password;
