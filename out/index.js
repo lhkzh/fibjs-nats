@@ -694,7 +694,7 @@ class NatsConnection extends events_1.EventEmitter {
             name: cfg.name,
             lang: exports.LANG,
             version: exports.VERSION,
-            echo: cfg.noEcho,
+            echo: !cfg.noEcho,
             verbose: cfg.verbose,
             pedantic: cfg.pedantic,
             protocol: server_info.proto,
