@@ -809,7 +809,7 @@ abstract class NatsConnection extends EventEmitter {
             name: cfg.name,
             lang: LANG,
             version: VERSION,
-            noEcho: cfg.noEcho,
+            echo: cfg.noEcho,
             verbose: cfg.verbose,
             pedantic: cfg.pedantic,
             protocol: server_info.proto,
