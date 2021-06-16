@@ -566,7 +566,6 @@ const DefaultConfig = {
     reconnect: true,
     reconnectWait: 250,
     maxReconnectAttempts: 86400,
-    name: "fibjs-nats",
     maxPingOut: 9,
     noEcho: false,
     verbose: false,
