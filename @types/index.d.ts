@@ -12,10 +12,16 @@ export declare class Nats extends events.EventEmitter {
     private _serverList;
     private _cfg;
     private _connection;
+    private _reConnetIng;
     private _subs;
     private _pingBacks;
-    private _reConnetIng;
+    private _tops;
+    private _tops_x;
     constructor();
+    /**
+     * 开启快速检测-(isSubscribeSubject,countSubscribeSubject)
+     */
+    fastCheck(): this;
     get address(): NatsAddress;
     get info(): NatsServerInfo;
     /**
@@ -73,6 +79,9 @@ export declare class Nats extends events.EventEmitter {
     subscribe(subject: string, callBack: SubFn, limit?: number): NatsSub;
     private _pre_sub_local_first;
     private _unsubscribe_fast;
+    private _subject_incr;
+    private _subject_decr;
+    private _subject_x;
     /**
      * 取消订阅
      * @param sub 订阅编号
@@ -84,6 +93,16 @@ export declare class Nats extends events.EventEmitter {
      * @param subject 主题
      */
     unsubscribeSubject(subject: string): void;
+    /**
+     * 检测-是否订阅过目标主题
+     * @param subject
+     */
+    isSubscribeSubject(subject: string): boolean;
+    /**
+     * 检测-订阅的目标主题的数量
+     * @param subject
+     */
+    countSubscribeSubject(subject: string): number;
     /**
      * 取消所有订阅
      */

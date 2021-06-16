@@ -29,15 +29,31 @@ export class Nats extends events.EventEmitter {
     private _cfg: NatsConfig;
     private _connection: NatsConnection;
 
+    private _reConnetIng: Class_Event;
+
+    //订阅的编号id-订阅信息
     private _subs: Map<string, NatsSub> = new Map<string, NatsSub>();
     private _pingBacks: Array<WaitEvt<boolean>> = [];
     // private _okWaits: Array<Class_Event> = [];
-
-    private _reConnetIng: Class_Event;
+    //订阅的主题-订阅数量
+    private _tops: Map<string, number>;
+    private _tops_x: {incr:(subject:string)=>void, decr:(subject:string)=>void};
 
     constructor() {
         super();
-        this._serverList = [];
+        this._tops_x = {incr:this._subject_incr.bind(this), decr:this._subject_decr.bind(this)};
+        this._subject_incr = this._subject_x;
+        this._subject_decr = this._subject_x;
+    }
+
+    /**
+     * 开启快速检测-(isSubscribeSubject,countSubscribeSubject)
+     */
+    public fastCheck(){
+        this._subject_incr = this._tops_x.incr;
+        this._subject_decr = this._tops_x.decr;
+        this._tops = new Map<string, number>();
+        return this;
     }
 
     public get address() {
@@ -115,9 +131,9 @@ export class Nats extends events.EventEmitter {
         }
     }
 
-    private _do_connect(state:number) {
+    private _do_connect(state: number) {
         let tmps = this._shuffle_server_list();
-        let retryNum = state>0 ? state:(this._cfg.maxReconnectAttempts > 0 ? this._cfg.maxReconnectAttempts : 1);
+        let retryNum = state > 0 ? state : (this._cfg.maxReconnectAttempts > 0 ? this._cfg.maxReconnectAttempts : 1);
         let suc_connection: NatsConnection;
         M:for (let i = 0; i < retryNum * tmps.length; i++) {
             for (let j = 0; j < tmps.length; j++) {
@@ -146,7 +162,7 @@ export class Nats extends events.EventEmitter {
             console.warn("nats|connect", err.message);
             throw err;
         } else {
-            this._on_connect(suc_connection, state<0);
+            this._on_connect(suc_connection, state < 0);
             return this;
         }
     }
@@ -293,7 +309,7 @@ export class Nats extends events.EventEmitter {
                 sid: sid,
                 fn: callBack,
                 cancel: () => {
-                    this._unsubscribe_fast(sid);
+                    this._unsubscribe_fast(sid, subject);
                 }
             };
         if (limit === true) {
@@ -302,6 +318,7 @@ export class Nats extends events.EventEmitter {
             sobj.num = limit;
         }
         this._subs.set(sid, sobj);
+        this._subject_incr(subject);
         if (queue) {
             sobj.queue = queue;
             return [sobj, Buffer.from(`SUB ${subject} ${queue} ${sid}${S_EOL}`)];
@@ -309,9 +326,33 @@ export class Nats extends events.EventEmitter {
         return [sobj, Buffer.from(`SUB ${subject} ${sid}${S_EOL}`)];
     }
 
-    private _unsubscribe_fast(sid: string) {
+    private _unsubscribe_fast(sid: string, subject?: string) {
+        if (!subject) {
+            let sop = this._subs.get(sid);
+            if (sop) {
+                this._subject_decr(sop.subject);
+            }
+        } else {
+            this._subject_decr(subject);
+        }
         this._subs.delete(sid);
         this._connection && this._send(Buffer.from(`UNSUB ${sid}${S_EOL}`), false);
+    }
+    //主题-数增加
+    private _subject_incr(subject: string) {
+        this._tops.set(subject, (this._tops.get(subject) || 0) + 1);
+    }
+    //主题-数减少
+    private _subject_decr(subject: string) {
+        let n = this._tops.get(subject);
+        if (n > 1) {
+            this._tops.set(subject, --n);
+        } else {
+            this._tops.delete(subject);
+        }
+    }
+    private _subject_x(subject: string) {
+
     }
 
     /**
@@ -335,6 +376,7 @@ export class Nats extends events.EventEmitter {
      * @param subject 主题
      */
     public unsubscribeSubject(subject: string) {
+        this._tops && this._tops.delete(subject);
         let barr = [];
         for (let e of this._subs.values()) {
             if (e.subject == subject) {
@@ -348,11 +390,45 @@ export class Nats extends events.EventEmitter {
     }
 
     /**
+     * 检测-是否订阅过目标主题
+     * @param subject
+     */
+    public isSubscribeSubject(subject: string): boolean {
+        if(this._tops){
+            return this._tops.has(subject);
+        }
+        for (let e of this._subs.values()) {
+            if (e.subject == subject) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 检测-订阅的目标主题的数量
+     * @param subject
+     */
+    public countSubscribeSubject(subject: string): number{
+        if(this._tops){
+            return this._tops.get(subject)||0;
+        }
+        let n = 0;
+        for (let e of this._subs.values()) {
+            if (e.subject == subject) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /**
      * 取消所有订阅
      */
     public unsubscribeAll() {
         let vals = this._subs.values();
         this._subs = new Map<string, NatsSub>();
+        this._tops && this._tops.clear();
         if (this._connection) {
             let barr = [];
             for (let e of vals) {
@@ -429,7 +505,7 @@ export class Nats extends events.EventEmitter {
             let data = payload.length > 0 ? this.decode(payload) : null;
             if (sop) {
                 if (sop.fast) {
-                    this._unsubscribe_fast(sid);
+                    this._unsubscribe_fast(sid, sop.subject);
                     sop.fn(data);
                 } else {
                     let meta: { subject: string, sid: string, reply?: (replyData: any) => void } = {
@@ -443,7 +519,7 @@ export class Nats extends events.EventEmitter {
                     }
                     if (sop.num > 0) {
                         if ((--sop.num) == 0) {
-                            this._unsubscribe_fast(sid);
+                            this._unsubscribe_fast(sid, sop.subject);
                         }
                     }
                     sop.fn(data, meta);
@@ -478,11 +554,10 @@ export class Nats extends events.EventEmitter {
     }
 
     private _on_err(evt: { type: string, reason: string }) {
-        console.error("nats_on_err", JSON.stringify(evt));
+        console.error("nats_on_err", JSON.stringify(evt), JSON.stringify(this.address));
     }
 
     private _on_ok() {
-
     }
 
     private _on_lost() {
@@ -528,7 +603,7 @@ export class Nats extends events.EventEmitter {
 
 
     //构建一个-并主动链接
-    public static make(cfg?: string | NatsAddress | NatsConnectCfg, tryInitRetryNum:number=9) {
+    public static make(cfg?: string | NatsAddress | NatsConnectCfg, tryInitRetryNum: number = 9) {
         let imp = new Nats();
         let conf: NatsConfig;
         if (typeof (cfg) == "string") {
@@ -556,7 +631,7 @@ export class Nats extends events.EventEmitter {
                 imp._cfg.serizalize = NatsSerizalize_Buf;
             }
         }
-        return imp._do_connect(Math.max(1,tryInitRetryNum));
+        return imp._do_connect(Math.max(1, tryInitRetryNum));
     }
 }
 
@@ -683,12 +758,17 @@ abstract class NatsConnection extends EventEmitter {
     protected _pingTimer: Class_Timer;
     protected _pingIng: number;
 
+    public echo:boolean;
+    public verbose:boolean;
+
     constructor(protected _cfg: NatsConfig, protected _addr: NatsAddress, protected _info: NatsServerInfo) {
         super();
         if (this._cfg.pingInterval > 0 && this._cfg.maxPingOut > 0) {
             this._pingIng = 0;
             this._do_ping();
         }
+        this.echo = !_cfg.noEcho;
+        this.verbose = !!_cfg.verbose;
     }
 
     private _do_ping() {
@@ -1093,7 +1173,7 @@ function convertToAddress(uri: string) {
         if (query.first("user")) {
             itf.user = query.first("user");
         }
-        if(query.first("pass")){
+        if (query.first("pass")) {
             itf.pass = query.first("pass");
         }
         if (query.first("token")) {
@@ -1102,7 +1182,7 @@ function convertToAddress(uri: string) {
     }
     if (!itf.token && obj.auth && !obj.password) {
         itf.token = obj.auth;
-        if(obj.username){
+        if (obj.username) {
             itf.user = obj.username;
         }
     } else if (!itf.user && obj.username && obj.password) {

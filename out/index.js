@@ -28,9 +28,21 @@ class Nats extends events.EventEmitter {
     constructor() {
         super();
         this._serverList = [];
+        //订阅的编号id-订阅信息
         this._subs = new Map();
         this._pingBacks = [];
-        this._serverList = [];
+        this._tops_x = { incr: this._subject_incr.bind(this), decr: this._subject_decr.bind(this) };
+        this._subject_incr = this._subject_x;
+        this._subject_decr = this._subject_x;
+    }
+    /**
+     * 开启快速检测-(isSubscribeSubject,countSubscribeSubject)
+     */
+    fastCheck() {
+        this._subject_incr = this._tops_x.incr;
+        this._subject_decr = this._tops_x.decr;
+        this._tops = new Map();
+        return this;
     }
     get address() {
         return this._connection ? this._connection.address : null;
@@ -276,7 +288,7 @@ class Nats extends events.EventEmitter {
             sid: sid,
             fn: callBack,
             cancel: () => {
-                this._unsubscribe_fast(sid);
+                this._unsubscribe_fast(sid, subject);
             }
         };
         if (limit === true) {
@@ -286,15 +298,41 @@ class Nats extends events.EventEmitter {
             sobj.num = limit;
         }
         this._subs.set(sid, sobj);
+        this._subject_incr(subject);
         if (queue) {
             sobj.queue = queue;
             return [sobj, Buffer.from(`SUB ${subject} ${queue} ${sid}${S_EOL}`)];
         }
         return [sobj, Buffer.from(`SUB ${subject} ${sid}${S_EOL}`)];
     }
-    _unsubscribe_fast(sid) {
+    _unsubscribe_fast(sid, subject) {
+        if (!subject) {
+            let sop = this._subs.get(sid);
+            if (sop) {
+                this._subject_decr(sop.subject);
+            }
+        }
+        else {
+            this._subject_decr(subject);
+        }
         this._subs.delete(sid);
         this._connection && this._send(Buffer.from(`UNSUB ${sid}${S_EOL}`), false);
+    }
+    //主题-数增加
+    _subject_incr(subject) {
+        this._tops.set(subject, (this._tops.get(subject) || 0) + 1);
+    }
+    //主题-数减少
+    _subject_decr(subject) {
+        let n = this._tops.get(subject);
+        if (n > 1) {
+            this._tops.set(subject, --n);
+        }
+        else {
+            this._tops.delete(subject);
+        }
+    }
+    _subject_x(subject) {
     }
     /**
      * 取消订阅
@@ -317,6 +355,7 @@ class Nats extends events.EventEmitter {
      * @param subject 主题
      */
     unsubscribeSubject(subject) {
+        this._tops && this._tops.delete(subject);
         let barr = [];
         for (let e of this._subs.values()) {
             if (e.subject == subject) {
@@ -329,11 +368,43 @@ class Nats extends events.EventEmitter {
         }
     }
     /**
+     * 检测-是否订阅过目标主题
+     * @param subject
+     */
+    isSubscribeSubject(subject) {
+        if (this._tops) {
+            return this._tops.has(subject);
+        }
+        for (let e of this._subs.values()) {
+            if (e.subject == subject) {
+                return true;
+            }
+        }
+        return false;
+    }
+    /**
+     * 检测-订阅的目标主题的数量
+     * @param subject
+     */
+    countSubscribeSubject(subject) {
+        if (this._tops) {
+            return this._tops.get(subject) || 0;
+        }
+        let n = 0;
+        for (let e of this._subs.values()) {
+            if (e.subject == subject) {
+                n++;
+            }
+        }
+        return n;
+    }
+    /**
      * 取消所有订阅
      */
     unsubscribeAll() {
         let vals = this._subs.values();
         this._subs = new Map();
+        this._tops && this._tops.clear();
         if (this._connection) {
             let barr = [];
             for (let e of vals) {
@@ -404,7 +475,7 @@ class Nats extends events.EventEmitter {
             let data = payload.length > 0 ? this.decode(payload) : null;
             if (sop) {
                 if (sop.fast) {
-                    this._unsubscribe_fast(sid);
+                    this._unsubscribe_fast(sid, sop.subject);
                     sop.fn(data);
                 }
                 else {
@@ -419,7 +490,7 @@ class Nats extends events.EventEmitter {
                     }
                     if (sop.num > 0) {
                         if ((--sop.num) == 0) {
-                            this._unsubscribe_fast(sid);
+                            this._unsubscribe_fast(sid, sop.subject);
                         }
                     }
                     sop.fn(data, meta);
@@ -454,7 +525,7 @@ class Nats extends events.EventEmitter {
         });
     }
     _on_err(evt) {
-        console.error("nats_on_err", JSON.stringify(evt));
+        console.error("nats_on_err", JSON.stringify(evt), JSON.stringify(this.address));
     }
     _on_ok() {
     }
@@ -581,6 +652,8 @@ class NatsConnection extends events_1.EventEmitter {
             this._pingIng = 0;
             this._do_ping();
         }
+        this.echo = !_cfg.noEcho;
+        this.verbose = !!_cfg.verbose;
     }
     _do_ping() {
         if (this._pingIng > this._cfg.maxPingOut) {
