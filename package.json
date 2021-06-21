@@ -1,8 +1,8 @@
 {
   "name": "fibjs-nats",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "nats client for fibjs",
-  "main": "./dist/index.js",
+  "main": "./out/index.js",
   "types": "./@types/index.d.ts",
   "private": false,
   "author": "",
