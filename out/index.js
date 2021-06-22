@@ -102,7 +102,7 @@ class Nats extends events.EventEmitter {
         let natAddr = util.isString(addr) ? convertToAddress(addr) : addr;
         this._serverList = this._serverList.filter(e => e.url != natAddr.url);
         if (this._connection && this._connection.address.url == natAddr.url) {
-            this.close();
+            this._close();
             this.reconnect();
         }
         return this;
@@ -121,7 +121,7 @@ class Nats extends events.EventEmitter {
         }
         try {
             evt = this._reConnetIng = new coroutine.Event();
-            this.close();
+            this._close();
             this._do_connect(-1);
             this._reConnetIng = null;
             evt.set();
@@ -463,6 +463,9 @@ class Nats extends events.EventEmitter {
      * 关闭链接
      */
     close() {
+        this._close(true);
+    }
+    _close(byActive) {
         let flag = this._cfg.reconnect;
         this._cfg.reconnect = false;
         let last = this._connection;
@@ -471,7 +474,9 @@ class Nats extends events.EventEmitter {
             last.close();
         }
         this._cfg.reconnect = flag;
-        this.unsubscribeAll();
+        if (byActive) {
+            this.unsubscribeAll();
+        }
         this._on_pong(true);
     }
     /**
@@ -577,7 +582,7 @@ class Nats extends events.EventEmitter {
     }
     _on_lost() {
         let last = this._connection;
-        this.close();
+        this._close();
         if (last != null) {
             console.error("nats|on_lost => %s", JSON.stringify(last.address));
             this.emit(NatsEvent.OnLost);

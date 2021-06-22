@@ -114,7 +114,7 @@ export declare class Nats extends events.EventEmitter {
      * @param subs 订阅编号
      * @param quantity
      */
-    unsubscribeMult(subs: string[] | NatsSub[]): void;
+    unsubscribeMult(subs: string[] | NatsSub[] | Set<string> | Set<NatsSub>): void;
     /**
      * 检测-是否订阅过目标主题
      * @param subject
@@ -133,6 +133,7 @@ export declare class Nats extends events.EventEmitter {
      * 关闭链接
      */
     close(): void;
+    private _close;
     /**
      * 发布数据
      * @param subject 主题

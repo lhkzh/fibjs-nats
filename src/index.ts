@@ -118,7 +118,7 @@ export class Nats extends events.EventEmitter {
         let natAddr = util.isString(addr) ? convertToAddress(<string>addr) : <NatsAddress>addr;
         this._serverList = this._serverList.filter(e => e.url != natAddr.url);
         if (this._connection && this._connection.address.url == natAddr.url) {
-            this.close();
+            this._close();
             this.reconnect();
         }
         return this;
@@ -138,7 +138,7 @@ export class Nats extends events.EventEmitter {
         }
         try {
             evt = this._reConnetIng = new coroutine.Event();
-            this.close();
+            this._close();
             this._do_connect(-1);
             this._reConnetIng = null;
             evt.set();
@@ -431,7 +431,7 @@ export class Nats extends events.EventEmitter {
      * @param subs 订阅编号
      * @param quantity
      */
-    public unsubscribeMult(subs: string[] | NatsSub[]) {
+    public unsubscribeMult(subs: string[] | NatsSub[] | Set<string> | Set<NatsSub>) {
         let sids: string[] = [];
         subs.forEach(sub => {
             sids.push((<NatsSub>sub).sid ? (<NatsSub>sub).sid : <string>sub)
@@ -494,6 +494,10 @@ export class Nats extends events.EventEmitter {
      * 关闭链接
      */
     public close() {
+        this._close(true);
+    }
+
+    private _close(byActive?:boolean){
         let flag = this._cfg.reconnect;
         this._cfg.reconnect = false;
         let last = this._connection;
@@ -502,7 +506,9 @@ export class Nats extends events.EventEmitter {
             last.close();
         }
         this._cfg.reconnect = flag;
-        this.unsubscribeAll();
+        if(byActive){
+            this.unsubscribeAll();
+        }
         this._on_pong(true);
     }
 
@@ -614,7 +620,7 @@ export class Nats extends events.EventEmitter {
 
     private _on_lost() {
         let last = this._connection;
-        this.close();
+        this._close();
         if (last != null) {
             console.error("nats|on_lost => %s", JSON.stringify(last.address));
             this.emit(NatsEvent.OnLost);
