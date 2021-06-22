@@ -31,6 +31,8 @@ class Nats extends events.EventEmitter {
         //订阅的编号id-订阅信息
         this._subs = new Map();
         this._pingBacks = [];
+        //执行回调中的数量
+        this._bakIngNum = 0;
         this._tops_x = { incr: this._subject_incr.bind(this), decr: this._subject_decr.bind(this) };
         this._subject_incr = this._subject_x;
         this._subject_decr = this._subject_x;
@@ -44,11 +46,27 @@ class Nats extends events.EventEmitter {
         this._tops = new Map();
         return this;
     }
+    /**
+     * 当前链接的服务器地址
+     */
     get address() {
         return this._connection ? this._connection.address : null;
     }
+    /**
+     * 当前链接的服务器的信息
+     */
     get info() {
         return this._connection ? this._connection.info : null;
+    }
+    /**
+     * 用于分析当前链接状态
+     */
+    get stat() {
+        return {
+            subNum: this._subs.size,
+            topicNum: this._tops.size,
+            bakNum: this._bakIngNum
+        };
     }
     /**
      * 配置连接地址
@@ -318,6 +336,20 @@ class Nats extends events.EventEmitter {
         this._subs.delete(sid);
         this._connection && this._send(Buffer.from(`UNSUB ${sid}${S_EOL}`), false);
     }
+    _unsubscribe_fast_mult(sids) {
+        let barr = [];
+        for (let sid of sids) {
+            let sop = this._subs.get(sid);
+            if (sop) {
+                this._subject_decr(sop.subject);
+                this._subs.delete(sid);
+                barr.push(Buffer.from(`UNSUB ${sid}${S_EOL}`));
+            }
+        }
+        if (barr.length) {
+            this._connection && this._send(Buffer.concat(barr), false);
+        }
+    }
     //主题-数增加
     _subject_incr(subject) {
         this._tops.set(subject, (this._tops.get(subject) || 0) + 1);
@@ -366,6 +398,18 @@ class Nats extends events.EventEmitter {
         if (barr.length) {
             this._send(Buffer.concat(barr), false);
         }
+    }
+    /**
+     * 取消订阅
+     * @param subs 订阅编号
+     * @param quantity
+     */
+    unsubscribeMult(subs) {
+        let sids = [];
+        subs.forEach(sub => {
+            sids.push(sub.sid ? sub.sid : sub);
+        });
+        this._unsubscribe_fast_mult(sids);
     }
     /**
      * 检测-是否订阅过目标主题
@@ -472,6 +516,7 @@ class Nats extends events.EventEmitter {
     _on_msg(subject, sid, payload, inbox) {
         let sop = this._subs.get(sid);
         try {
+            this._bakIngNum++;
             let data = payload.length > 0 ? this.decode(payload) : null;
             if (sop) {
                 if (sop.fast) {
@@ -503,6 +548,7 @@ class Nats extends events.EventEmitter {
         }
         catch (e) {
             console.error("nats|on_msg", e);
+            this._bakIngNum--;
         }
     }
     _on_connect(connection, isReconnected) {
@@ -569,6 +615,14 @@ class Nats extends events.EventEmitter {
     decode(data) {
         return this._cfg.serizalize.decode(data);
     }
+    set serizalize(c) {
+        if (c) {
+            this._cfg.serizalize = c;
+        }
+    }
+    get serizalize() {
+        return this._cfg.serizalize;
+    }
     //构建一个-并主动链接
     static make(cfg, tryInitRetryNum = 9) {
         let imp = new Nats();
@@ -600,7 +654,7 @@ class Nats extends events.EventEmitter {
                 conf.serizalize = exports.NatsSerizalize_Msgpack;
             }
             else {
-                imp._cfg.serizalize = exports.NatsSerizalize_Buf;
+                conf.serizalize = exports.NatsSerizalize_Buf;
             }
         }
         return imp._do_connect(Math.max(1, tryInitRetryNum));

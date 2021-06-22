@@ -17,13 +17,28 @@ export declare class Nats extends events.EventEmitter {
     private _pingBacks;
     private _tops;
     private _tops_x;
+    private _bakIngNum;
     constructor();
     /**
      * 开启快速检测-(isSubscribeSubject,countSubscribeSubject)
      */
     fastCheck(): this;
+    /**
+     * 当前链接的服务器地址
+     */
     get address(): NatsAddress;
+    /**
+     * 当前链接的服务器的信息
+     */
     get info(): NatsServerInfo;
+    /**
+     * 用于分析当前链接状态
+     */
+    get stat(): {
+        subNum: number;
+        topicNum: number;
+        bakNum: number;
+    };
     /**
      * 配置连接地址
      * @param addr  ["nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"]
@@ -79,6 +94,7 @@ export declare class Nats extends events.EventEmitter {
     subscribe(subject: string, callBack: SubFn, limit?: number): NatsSub;
     private _pre_sub_local_first;
     private _unsubscribe_fast;
+    private _unsubscribe_fast_mult;
     private _subject_incr;
     private _subject_decr;
     private _subject_x;
@@ -93,6 +109,12 @@ export declare class Nats extends events.EventEmitter {
      * @param subject 主题
      */
     unsubscribeSubject(subject: string): void;
+    /**
+     * 取消订阅
+     * @param subs 订阅编号
+     * @param quantity
+     */
+    unsubscribeMult(subs: string[] | NatsSub[]): void;
     /**
      * 检测-是否订阅过目标主题
      * @param subject
@@ -130,6 +152,8 @@ export declare class Nats extends events.EventEmitter {
     protected _on_pong(is_lost: boolean): void;
     protected encode(payload: any): Class_Buffer;
     protected decode(data: Class_Buffer): any;
+    set serizalize(c: NatsSerizalize);
+    get serizalize(): NatsSerizalize;
     static make(cfg?: string | NatsAddress | NatsConnectCfg, tryInitRetryNum?: number): Nats;
 }
 export declare class NatsEvent {

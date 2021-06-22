@@ -37,11 +37,13 @@ export class Nats extends events.EventEmitter {
     // private _okWaits: Array<Class_Event> = [];
     //订阅的主题-订阅数量
     private _tops: Map<string, number>;
-    private _tops_x: {incr:(subject:string)=>void, decr:(subject:string)=>void};
+    private _tops_x: { incr: (subject: string) => void, decr: (subject: string) => void };
+    //执行回调中的数量
+    private _bakIngNum: number = 0;
 
     constructor() {
         super();
-        this._tops_x = {incr:this._subject_incr.bind(this), decr:this._subject_decr.bind(this)};
+        this._tops_x = {incr: this._subject_incr.bind(this), decr: this._subject_decr.bind(this)};
         this._subject_incr = this._subject_x;
         this._subject_decr = this._subject_x;
     }
@@ -49,19 +51,36 @@ export class Nats extends events.EventEmitter {
     /**
      * 开启快速检测-(isSubscribeSubject,countSubscribeSubject)
      */
-    public fastCheck(){
+    public fastCheck() {
         this._subject_incr = this._tops_x.incr;
         this._subject_decr = this._tops_x.decr;
         this._tops = new Map<string, number>();
         return this;
     }
 
+    /**
+     * 当前链接的服务器地址
+     */
     public get address() {
         return this._connection ? this._connection.address : null;
     }
 
+    /**
+     * 当前链接的服务器的信息
+     */
     public get info() {
         return this._connection ? this._connection.info : null;
+    }
+
+    /**
+     * 用于分析当前链接状态
+     */
+    public get stat() {
+        return {
+            subNum: this._subs.size,
+            topicNum: this._tops.size,
+            bakNum: this._bakIngNum
+        };
     }
 
     /**
@@ -338,10 +357,27 @@ export class Nats extends events.EventEmitter {
         this._subs.delete(sid);
         this._connection && this._send(Buffer.from(`UNSUB ${sid}${S_EOL}`), false);
     }
+
+    private _unsubscribe_fast_mult(sids: string[]) {
+        let barr: Class_Buffer[] = [];
+        for (let sid of sids) {
+            let sop = this._subs.get(sid);
+            if (sop) {
+                this._subject_decr(sop.subject);
+                this._subs.delete(sid);
+                barr.push(Buffer.from(`UNSUB ${sid}${S_EOL}`));
+            }
+        }
+        if (barr.length) {
+            this._connection && this._send(Buffer.concat(barr), false);
+        }
+    }
+
     //主题-数增加
     private _subject_incr(subject: string) {
         this._tops.set(subject, (this._tops.get(subject) || 0) + 1);
     }
+
     //主题-数减少
     private _subject_decr(subject: string) {
         let n = this._tops.get(subject);
@@ -351,6 +387,7 @@ export class Nats extends events.EventEmitter {
             this._tops.delete(subject);
         }
     }
+
     private _subject_x(subject: string) {
 
     }
@@ -390,11 +427,24 @@ export class Nats extends events.EventEmitter {
     }
 
     /**
+     * 取消订阅
+     * @param subs 订阅编号
+     * @param quantity
+     */
+    public unsubscribeMult(subs: string[] | NatsSub[]) {
+        let sids: string[] = [];
+        subs.forEach(sub => {
+            sids.push((<NatsSub>sub).sid ? (<NatsSub>sub).sid : <string>sub)
+        })
+        this._unsubscribe_fast_mult(sids);
+    }
+
+    /**
      * 检测-是否订阅过目标主题
      * @param subject
      */
     public isSubscribeSubject(subject: string): boolean {
-        if(this._tops){
+        if (this._tops) {
             return this._tops.has(subject);
         }
         for (let e of this._subs.values()) {
@@ -409,9 +459,9 @@ export class Nats extends events.EventEmitter {
      * 检测-订阅的目标主题的数量
      * @param subject
      */
-    public countSubscribeSubject(subject: string): number{
-        if(this._tops){
-            return this._tops.get(subject)||0;
+    public countSubscribeSubject(subject: string): number {
+        if (this._tops) {
+            return this._tops.get(subject) || 0;
         }
         let n = 0;
         for (let e of this._subs.values()) {
@@ -502,6 +552,7 @@ export class Nats extends events.EventEmitter {
     protected _on_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string) {
         let sop = this._subs.get(sid);
         try {
+            this._bakIngNum++;
             let data = payload.length > 0 ? this.decode(payload) : null;
             if (sop) {
                 if (sop.fast) {
@@ -530,6 +581,7 @@ export class Nats extends events.EventEmitter {
             }
         } catch (e) {
             console.error("nats|on_msg", e);
+            this._bakIngNum--;
         }
     }
 
@@ -601,6 +653,15 @@ export class Nats extends events.EventEmitter {
         return this._cfg.serizalize.decode(data);
     }
 
+    public set serizalize(c: NatsSerizalize) {
+        if (c) {
+            this._cfg.serizalize = c;
+        }
+    }
+
+    public get serizalize(): NatsSerizalize {
+        return this._cfg.serizalize;
+    }
 
     //构建一个-并主动链接
     public static make(cfg?: string | NatsAddress | NatsConnectCfg, tryInitRetryNum: number = 9) {
@@ -628,7 +689,7 @@ export class Nats extends events.EventEmitter {
             } else if (imp._cfg["msgpack"]) {
                 conf.serizalize = NatsSerizalize_Msgpack;
             } else {
-                imp._cfg.serizalize = NatsSerizalize_Buf;
+                conf.serizalize = NatsSerizalize_Buf;
             }
         }
         return imp._do_connect(Math.max(1, tryInitRetryNum));
@@ -758,8 +819,8 @@ abstract class NatsConnection extends EventEmitter {
     protected _pingTimer: Class_Timer;
     protected _pingIng: number;
 
-    public echo:boolean;
-    public verbose:boolean;
+    public echo: boolean;
+    public verbose: boolean;
 
     constructor(protected _cfg: NatsConfig, protected _addr: NatsAddress, protected _info: NatsServerInfo) {
         super();
