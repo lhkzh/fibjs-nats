@@ -248,15 +248,10 @@ class Nats extends events.EventEmitter {
      */
     requestAsync(subject, payload, timeoutTtl = 3000) {
         return new Promise((resolve, reject) => {
-            let _cmd_buf, subInfo, inbox, cbk = (rsp, _, err) => {
+            let inbox, cbk = (rsp, _, err) => {
                 clearTimeout(timer);
                 if (err) {
-                    if (subInfo) {
-                        subInfo.cancel();
-                    }
-                    else {
-                        this._responses.delete(inbox);
-                    }
+                    this._responses.delete(inbox);
                     reject(err);
                 }
                 else {
@@ -265,19 +260,10 @@ class Nats extends events.EventEmitter {
             }, timer = setTimeout(() => {
                 cbk(null, null, "nats_request_timeout:" + subject);
             }, timeoutTtl);
-            if (this._oldInboxStyle) {
-                inbox = S_INBOX + (this._nextSid++).toString();
-                let subCmdBuf;
-                [subInfo, subCmdBuf] = this._pre_sub_local_first(inbox, cbk, true);
-                _cmd_buf = this._pub_blob_3(subCmdBuf, subject, inbox, this.encode(payload));
-            }
-            else {
+            try {
                 inbox = this._mainInbox_pre + (this._nextSid++).toString();
                 this._responses.set(inbox, cbk);
-                _cmd_buf = this._pub_blob_2(subject, inbox, this.encode(payload));
-            }
-            try {
-                this._send(_cmd_buf, false);
+                this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), false);
             }
             catch (e) {
                 cbk(null, null, e);
@@ -290,33 +276,18 @@ class Nats extends events.EventEmitter {
      * @param payload
      */
     request(subject, payload, timeoutTtl = 3000) {
-        let evt = new WaitTimeoutEvt(timeoutTtl), evt_cbk = evt.cbk3();
-        let _cmd_buf, subInfo, inbox;
-        if (this._oldInboxStyle) {
-            inbox = S_INBOX + (this._nextSid++).toString();
-            let subCmdBuf;
-            [subInfo, subCmdBuf] = this._pre_sub_local_first(inbox, evt_cbk, true);
-            _cmd_buf = this._pub_blob_3(subCmdBuf, subject, inbox, this.encode(payload));
-        }
-        else {
+        let evt = new WaitTimeoutEvt(timeoutTtl), evt_cbk = evt.cbk(), inbox;
+        try {
             inbox = this._mainInbox_pre + (this._nextSid++).toString();
             this._responses.set(inbox, evt_cbk);
-            _cmd_buf = this._pub_blob_2(subject, inbox, this.encode(payload));
-        }
-        try {
-            this._send(_cmd_buf, false);
+            this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), false);
             evt.wait();
         }
         catch (e) {
             evt.fail(e);
         }
         if (evt.err) {
-            if (subInfo) {
-                subInfo.cancel();
-            }
-            else {
-                this._responses.delete(inbox);
-            }
+            this._responses.delete(inbox);
             if (evt.err === WaitTimeoutEvt.TimeOutErr) {
                 evt.err = new Error(`nats_request_timeout:${subject}`);
             }
@@ -348,6 +319,11 @@ class Nats extends events.EventEmitter {
         this._send(subCommdBuf, true);
         return subInfo;
     }
+    _pre_sub_mainInbox() {
+        let sid = "0";
+        this._subs.set(sid, { subject: this._mainInbox, sid: sid, fn: this._on_mainInbox.bind(this), cancel: () => { } });
+        return sid;
+    }
     _pre_sub_local_first(subject, callBack, limit, queue) {
         let sid = (this._nextSid++).toString(), sobj = {
             subject: subject,
@@ -357,10 +333,7 @@ class Nats extends events.EventEmitter {
                 this._unsubscribe_fast(sid, subject);
             }
         };
-        if (limit === true) {
-            sobj.fast = true;
-        }
-        else if (limit >= 0) {
+        if (limit >= 0) {
             sobj.num = limit;
         }
         this._subs.set(sid, sobj);
@@ -588,28 +561,22 @@ class Nats extends events.EventEmitter {
             this._bakIngNum++;
             let data = payload.length > 0 ? this.decode(payload) : null;
             if (sop) {
-                if (sop.fast) {
-                    this._unsubscribe_fast(sid, sop.subject);
-                    sop.fn(data);
-                }
-                else {
-                    let meta = {
-                        subject: subject,
-                        sid: sid
+                let meta = {
+                    subject: subject,
+                    sid: sid
+                };
+                if (inbox) {
+                    meta.reply = (replyData) => {
+                        this.publish(inbox, replyData);
                     };
-                    if (inbox) {
-                        meta.reply = (replyData) => {
-                            this.publish(inbox, replyData);
-                        };
-                    }
-                    if (sop.num > 0) {
-                        if ((--sop.num) == 0) {
-                            this._unsubscribe_fast(sid, sop.subject);
-                        }
-                    }
-                    sop.fn(data, meta);
-                    this.emit(subject, data);
                 }
+                if (sop.num > 0) {
+                    if ((--sop.num) == 0) {
+                        this._unsubscribe_fast(sid, sop.subject);
+                    }
+                }
+                sop.fn(data, meta);
+                this.emit(subject, data);
             }
             else if (inbox) { //队列选了当前执行节点，但是当前节点给取消订阅了
                 this.publishInbox(subject, inbox, payload);
@@ -627,7 +594,7 @@ class Nats extends events.EventEmitter {
         connection.on("close", this._on_lost.bind(this));
         connection.on("ok", this._on_ok.bind(this));
         connection.on("err", this._on_err.bind(this));
-        let tmpArr = [this._pre_sub_local_first(this._mainInbox, this._on_mainInbox.bind(this))[1].toString()];
+        let tmpArr = [`SUB ${this._mainInbox} ${this._pre_sub_mainInbox()}${S_EOL}`];
         for (let e of this._subs.values()) {
             if (e.queue) {
                 tmpArr.push(`SUB ${e.subject} ${e.queue} ${e.sid}${S_EOL}`);
@@ -1170,8 +1137,8 @@ class WaitTimeoutEvt extends WaitEvt {
         clearTimeout(this.t);
         super.set();
     }
-    cbk3() {
-        return (d, _, e) => {
+    cbk() {
+        return (d, e) => {
             if (e) {
                 this.fail(e);
             }

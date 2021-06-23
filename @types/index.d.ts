@@ -21,7 +21,6 @@ export declare class Nats extends events.EventEmitter {
     private _bakIngNum;
     private _mainInbox;
     private _mainInbox_pre;
-    private _oldInboxStyle;
     private _nextSid;
     constructor();
     /**
@@ -98,6 +97,7 @@ export declare class Nats extends events.EventEmitter {
      * @returns 订阅的编号
      */
     subscribe(subject: string, callBack: SubFn, limit?: number): NatsSub;
+    private _pre_sub_mainInbox;
     private _pre_sub_local_first;
     private _unsubscribe_fast;
     private _unsubscribe_fast_mult;
@@ -180,7 +180,6 @@ export declare type NatsSub = {
     sid: string;
     fn: SubFn;
     num?: number;
-    fast?: boolean;
     queue?: string;
     cancel: () => void;
 };
