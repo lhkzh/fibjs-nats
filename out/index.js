@@ -30,12 +30,17 @@ class Nats extends events.EventEmitter {
         this._serverList = [];
         //订阅的编号id-订阅信息
         this._subs = new Map();
+        //请求的回调信息
+        this._responses = new Map();
         this._pingBacks = [];
         //执行回调中的数量
         this._bakIngNum = 0;
         this._tops_x = { incr: this._subject_incr.bind(this), decr: this._subject_decr.bind(this) };
         this._subject_incr = this._subject_x;
         this._subject_decr = this._subject_x;
+        this._nextSid = 1n;
+        this._mainInbox_pre = S_INBOX + Nuid_1.nuid.next() + ".";
+        this._mainInbox = this._mainInbox_pre + "*";
     }
     /**
      * 开启快速检测-(isSubscribeSubject,countSubscribeSubject)
@@ -221,6 +226,13 @@ class Nats extends events.EventEmitter {
         evt.wait();
         return evt.rsp;
     }
+    _on_mainInbox(data, meta) {
+        let f = this._responses.get(meta.subject);
+        if (f) {
+            this._responses.delete(meta.subject);
+            f(data);
+        }
+    }
     /**
      * 检测是否能连通
      */
@@ -236,19 +248,39 @@ class Nats extends events.EventEmitter {
      */
     requestAsync(subject, payload, timeoutTtl = 3000) {
         return new Promise((resolve, reject) => {
-            let inbox = '_INBOX.' + Nuid_1.nuid.next(), cbk = (rsp, err) => {
+            let _cmd_buf, subInfo, inbox, cbk = (rsp, _, err) => {
                 clearTimeout(timer);
-                err ? reject(err) : resolve(rsp);
+                if (err) {
+                    if (subInfo) {
+                        subInfo.cancel();
+                    }
+                    else {
+                        this._responses.delete(inbox);
+                    }
+                    reject(err);
+                }
+                else {
+                    resolve(rsp);
+                }
             }, timer = setTimeout(() => {
-                subInfo.cancel();
-                cbk(null, "nats_request_timeout:" + subject);
+                cbk(null, null, "nats_request_timeout:" + subject);
             }, timeoutTtl);
-            let [subInfo, subCmdBuf] = this._pre_sub_local_first(inbox, cbk, true);
+            if (this._oldInboxStyle) {
+                inbox = S_INBOX + (this._nextSid++).toString();
+                let subCmdBuf;
+                [subInfo, subCmdBuf] = this._pre_sub_local_first(inbox, cbk, true);
+                _cmd_buf = this._pub_blob_3(subCmdBuf, subject, inbox, this.encode(payload));
+            }
+            else {
+                inbox = this._mainInbox_pre + (this._nextSid++).toString();
+                this._responses.set(inbox, cbk);
+                _cmd_buf = this._pub_blob_2(subject, inbox, this.encode(payload));
+            }
             try {
-                this._send(this._pub_blob_3(subCmdBuf, subject, inbox, this.encode(payload)), false);
+                this._send(_cmd_buf, false);
             }
             catch (e) {
-                cbk(null, e);
+                cbk(null, null, e);
             }
         });
     }
@@ -258,17 +290,33 @@ class Nats extends events.EventEmitter {
      * @param payload
      */
     request(subject, payload, timeoutTtl = 3000) {
-        let evt = new WaitTimeoutEvt(timeoutTtl), inbox = '_INBOX.' + Nuid_1.nuid.next();
-        let [subInfo, subCmdBuf] = this._pre_sub_local_first(inbox, evt.suc.bind(evt), true);
+        let evt = new WaitTimeoutEvt(timeoutTtl), evt_cbk = evt.cbk3();
+        let _cmd_buf, subInfo, inbox;
+        if (this._oldInboxStyle) {
+            inbox = S_INBOX + (this._nextSid++).toString();
+            let subCmdBuf;
+            [subInfo, subCmdBuf] = this._pre_sub_local_first(inbox, evt_cbk, true);
+            _cmd_buf = this._pub_blob_3(subCmdBuf, subject, inbox, this.encode(payload));
+        }
+        else {
+            inbox = this._mainInbox_pre + (this._nextSid++).toString();
+            this._responses.set(inbox, evt_cbk);
+            _cmd_buf = this._pub_blob_2(subject, inbox, this.encode(payload));
+        }
         try {
-            this._send(this._pub_blob_3(subCmdBuf, subject, inbox, this.encode(payload)), false);
+            this._send(_cmd_buf, false);
             evt.wait();
         }
         catch (e) {
             evt.fail(e);
         }
         if (evt.err) {
-            subInfo.cancel();
+            if (subInfo) {
+                subInfo.cancel();
+            }
+            else {
+                this._responses.delete(inbox);
+            }
             if (evt.err === WaitTimeoutEvt.TimeOutErr) {
                 evt.err = new Error(`nats_request_timeout:${subject}`);
             }
@@ -301,7 +349,7 @@ class Nats extends events.EventEmitter {
         return subInfo;
     }
     _pre_sub_local_first(subject, callBack, limit, queue) {
-        let sid = Nuid_1.nuid.next(), sobj = {
+        let sid = (this._nextSid++).toString(), sobj = {
             subject: subject,
             sid: sid,
             fn: callBack,
@@ -369,16 +417,26 @@ class Nats extends events.EventEmitter {
     /**
      * 取消订阅
      * @param sub 订阅编号
-     * @param quantity
+     * @param after
      */
-    unsubscribe(sub, quantity) {
+    unsubscribe(sub, after) {
         let sid = sub.sid ? sub.sid : sub;
         if (this._subs.has(sid)) {
-            if (arguments.length < 2) {
+            if (!Number.isInteger(after) || after < 1) {
                 this._unsubscribe_fast(sid);
             }
             else {
-                this._send(Buffer.from(`UNSUB ${sid} ${quantity}${S_EOL}`), true);
+                if (this._subs.get(sid).num > 0) {
+                    let t = this._subs.get(sid).num = this._subs.get(sid).num - after;
+                    if (t < 1) {
+                        this._unsubscribe_fast(sid);
+                        return;
+                    }
+                }
+                else {
+                    this._subs.get(sid).num = after;
+                }
+                this._send(Buffer.from(`UNSUB ${sid} ${after}${S_EOL}`), true);
             }
         }
     }
@@ -477,7 +535,13 @@ class Nats extends events.EventEmitter {
         if (byActive) {
             this.unsubscribeAll();
         }
+        let b = this._responses;
+        this._responses = new Map();
         this._on_pong(true);
+        let e = new Error("nats|on_lost");
+        b.forEach(f => {
+            f(null, null, e);
+        });
     }
     /**
      * 发布数据
@@ -563,8 +627,21 @@ class Nats extends events.EventEmitter {
         connection.on("close", this._on_lost.bind(this));
         connection.on("ok", this._on_ok.bind(this));
         connection.on("err", this._on_err.bind(this));
+        let tmpArr = [this._pre_sub_local_first(this._mainInbox, this._on_mainInbox.bind(this))[1].toString()];
         for (let e of this._subs.values()) {
-            connection.send(Buffer.from(`SUB ${e.subject} ${e.sid}\r\n`));
+            if (e.queue) {
+                tmpArr.push(`SUB ${e.subject} ${e.queue} ${e.sid}${S_EOL}`);
+            }
+            else {
+                tmpArr.push(`SUB ${e.subject} ${e.sid}${S_EOL}`);
+            }
+            if (tmpArr.length % 100 == 0) {
+                connection.send(Buffer.from(tmpArr.join('')));
+                tmpArr.length = 0;
+            }
+        }
+        if (tmpArr.length) {
+            connection.send(Buffer.from(tmpArr.join('')));
         }
         coroutine.start(() => {
             if (this._connection == connection) {
@@ -1093,6 +1170,16 @@ class WaitTimeoutEvt extends WaitEvt {
         clearTimeout(this.t);
         super.set();
     }
+    cbk3() {
+        return (d, _, e) => {
+            if (e) {
+                this.fail(e);
+            }
+            else {
+                this.suc(d);
+            }
+        };
+    }
 }
 WaitTimeoutEvt.TimeOutErr = new Error("wait_time_out_err");
 function convertToAddress(uri) {
@@ -1137,6 +1224,7 @@ const B_PING_EOL = Buffer.from("PING\r\n");
 const B_PONG_EOL = Buffer.from("PONG\r\n");
 const S_EOL = "\r\n";
 const S_PUB = "PUB";
+const S_INBOX = "_INBOX.";
 const BIT_2_ERR = Buffer.from("-ERR")[2];
 const BIT_2_OK = Buffer.from("+OK")[2];
 const BIT_1_PING = Buffer.from('PING')[1];

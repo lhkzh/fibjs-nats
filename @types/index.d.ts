@@ -14,10 +14,15 @@ export declare class Nats extends events.EventEmitter {
     private _connection;
     private _reConnetIng;
     private _subs;
+    private _responses;
     private _pingBacks;
     private _tops;
     private _tops_x;
     private _bakIngNum;
+    private _mainInbox;
+    private _mainInbox_pre;
+    private _oldInboxStyle;
+    private _nextSid;
     constructor();
     /**
      * 开启快速检测-(isSubscribeSubject,countSubscribeSubject)
@@ -60,6 +65,7 @@ export declare class Nats extends events.EventEmitter {
      * 检测是否能连通
      */
     ping(): boolean;
+    private _on_mainInbox;
     /**
      * 检测是否能连通
      */
@@ -101,9 +107,9 @@ export declare class Nats extends events.EventEmitter {
     /**
      * 取消订阅
      * @param sub 订阅编号
-     * @param quantity
+     * @param after
      */
-    unsubscribe(sub: string | NatsSub, quantity?: number): void;
+    unsubscribe(sub: string | NatsSub, after?: number): void;
     /**
      * 取消目标主题的订阅
      * @param subject 主题
