@@ -44,7 +44,7 @@ export class Nats extends events.EventEmitter {
     private _bakIngNum: number = 0;
 
     private _mainInbox: string;
-    private _mainInbox_pre : string;
+    private _mainInbox_pre: string;
     private _nextSid;
 
     constructor() {
@@ -53,8 +53,8 @@ export class Nats extends events.EventEmitter {
         this._subject_incr = this._subject_x;
         this._subject_decr = this._subject_x;
         this._nextSid = 1n;
-        this._mainInbox_pre = S_INBOX+nuid.next()+".";
-        this._mainInbox = this._mainInbox_pre+"*";
+        this._mainInbox_pre = S_INBOX + nuid.next() + ".";
+        this._mainInbox = this._mainInbox_pre + "*";
     }
 
     /**
@@ -247,9 +247,9 @@ export class Nats extends events.EventEmitter {
         return evt.rsp;
     }
 
-    private _on_mainInbox(data:any, meta:{subject:string, sid:string}){
+    private _on_mainInbox(data: any, meta: { subject: string, sid: string }) {
         let f = this._responses.get(meta.subject);
-        if(f){
+        if (f) {
             this._responses.delete(meta.subject);
             f(data);
         }
@@ -271,18 +271,18 @@ export class Nats extends events.EventEmitter {
      */
     public requestAsync(subject: string, payload: any, timeoutTtl: number = 3000): Promise<any> {
         return new Promise<any>((resolve, reject) => {
-            let inbox:string,
+            let inbox: string,
                 cbk = (rsp, _, err) => {
-                clearTimeout(timer);
-                if(err){
-                    this._responses.delete(inbox);
-                    reject(err);
-                }else{
-                    resolve(rsp);
-                }
-            }, timer: Class_Timer = setTimeout(() => {
-                cbk(null, null, "nats_request_timeout:" + subject);
-            }, timeoutTtl);
+                    clearTimeout(timer);
+                    if (err) {
+                        this._responses.delete(inbox);
+                        reject(err);
+                    } else {
+                        resolve(rsp);
+                    }
+                }, timer: Class_Timer = setTimeout(() => {
+                    cbk(null, null, "nats_request_timeout:" + subject);
+                }, timeoutTtl);
 
             try {
                 inbox = this._mainInbox_pre + (this._nextSid++).toString();
@@ -300,7 +300,7 @@ export class Nats extends events.EventEmitter {
      * @param payload
      */
     public request(subject: string, payload: any, timeoutTtl: number = 3000): any {
-        let evt = new WaitTimeoutEvt<any>(timeoutTtl), evt_cbk=evt.cbk(), inbox:string;
+        let evt = new WaitTimeoutEvt<any>(timeoutTtl), evt_cbk = evt.cbk(), inbox: string;
         try {
             inbox = this._mainInbox_pre + (this._nextSid++).toString();
             this._responses.set(inbox, evt_cbk);
@@ -344,11 +344,16 @@ export class Nats extends events.EventEmitter {
         this._send(subCommdBuf, true);
         return subInfo;
     }
-    private _pre_sub_mainInbox(){
+
+    private _pre_sub_mainInbox() {
         let sid = "0";
-        this._subs.set(sid, {subject:this._mainInbox, sid:sid, fn:this._on_mainInbox.bind(this), cancel:()=>{}});
+        this._subs.set(sid, {
+            subject: this._mainInbox, sid: sid, fn: this._on_mainInbox.bind(this), cancel: () => {
+            }
+        });
         return sid;
     }
+
     private _pre_sub_local_first(subject: string, callBack: SubFn, limit?: number, queue?: string): [NatsSub, Class_Buffer] {
         let sid = (this._nextSid++).toString(),
             sobj: NatsSub = {
@@ -426,16 +431,16 @@ export class Nats extends events.EventEmitter {
     public unsubscribe(sub: string | NatsSub, after?: number) {
         let sid = (<NatsSub>sub).sid ? (<NatsSub>sub).sid : <string>sub;
         if (this._subs.has(sid)) {
-            if (!Number.isInteger(after) || after<1) {
+            if (!Number.isInteger(after) || after < 1) {
                 this._unsubscribe_fast(sid);
             } else {
-                if(this._subs.get(sid).num>0){
-                    let t = this._subs.get(sid).num = this._subs.get(sid).num-after;
-                    if(t<1){
+                if (this._subs.get(sid).num > 0) {
+                    let t = this._subs.get(sid).num = this._subs.get(sid).num - after;
+                    if (t < 1) {
                         this._unsubscribe_fast(sid);
                         return;
                     }
-                }else{
+                } else {
                     this._subs.get(sid).num = after;
                 }
                 this._send(Buffer.from(`UNSUB ${sid} ${after}${S_EOL}`), true);
@@ -532,7 +537,7 @@ export class Nats extends events.EventEmitter {
         this._close(true);
     }
 
-    private _close(byActive?:boolean){
+    private _close(byActive?: boolean) {
         let flag = this._cfg.reconnect;
         this._cfg.reconnect = false;
         let last = this._connection;
@@ -541,15 +546,15 @@ export class Nats extends events.EventEmitter {
             last.close();
         }
         this._cfg.reconnect = flag;
-        if(byActive){
+        if (byActive) {
             this.unsubscribeAll();
         }
         let b = this._responses;
         this._responses = new Map<string, Function>();
         this._on_pong(true);
         let e = new Error("nats|on_lost");
-        b.forEach(f=>{
-            f(null,null,e);
+        b.forEach(f => {
+            f(null, null, e);
         });
     }
 
@@ -636,17 +641,17 @@ export class Nats extends events.EventEmitter {
         connection.on("err", this._on_err.bind(this));
         let tmpArr = [`SUB ${this._mainInbox} ${this._pre_sub_mainInbox()}${S_EOL}`];
         for (let e of this._subs.values()) {
-            if(e.queue){
+            if (e.queue) {
                 tmpArr.push(`SUB ${e.subject} ${e.queue} ${e.sid}${S_EOL}`)
-            }else{
+            } else {
                 tmpArr.push(`SUB ${e.subject} ${e.sid}${S_EOL}`);
             }
-            if(tmpArr.length%100==0){
+            if (tmpArr.length % 100 == 0) {
                 connection.send(Buffer.from(tmpArr.join('')));
-                tmpArr.length= 0;
+                tmpArr.length = 0;
             }
         }
-        if(tmpArr.length){
+        if (tmpArr.length) {
             connection.send(Buffer.from(tmpArr.join('')));
         }
         coroutine.start(() => {
@@ -1278,11 +1283,12 @@ class WaitTimeoutEvt<T> extends WaitEvt<T> {
         clearTimeout(this.t);
         super.set();
     }
-    public cbk(){
-        return (d,e)=>{
-            if(e){
+
+    public cbk() {
+        return (d, e) => {
+            if (e) {
                 this.fail(e);
-            }else{
+            } else {
                 this.suc(d);
             }
         }
