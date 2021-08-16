@@ -19,6 +19,7 @@ export declare class Nats extends events.EventEmitter {
     private _tops;
     private _tops_x;
     private _bakIngNum;
+    private _waitToSendNum;
     private _mainInbox;
     private _mainInbox_pre;
     private _nextSid;
@@ -38,10 +39,14 @@ export declare class Nats extends events.EventEmitter {
     /**
      * 用于分析当前链接状态
      */
-    get stat(): {
+    toStatJson(): {
+        ok: boolean;
+        repair: boolean;
+        pingIngNum: number;
         subNum: number;
         topicNum: number;
         bakNum: number;
+        waitToSendNum: number;
     };
     /**
      * 配置连接地址
@@ -220,6 +225,7 @@ export interface NatsConfig {
     reconnectWait?: number;
     noRandomize?: boolean;
     maxReconnectAttempts?: number;
+    waitToSendLimitMaxFail?: number;
     name?: string;
     noEcho?: boolean;
     verbose?: boolean;

@@ -1,13 +1,13 @@
 {
   "name": "fibjs-nats",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "nats client for fibjs",
   "main": "./out/index.js",
   "types": "./@types/index.d.ts",
   "private": false,
   "author": "",
   "homepage": "https://github.com/lhkzh/fibjs-nats",
-  "license": "ISC",
+  "license": "MIT",
   "keywords": [
     "fibjs",
     "nats",
@@ -18,7 +18,7 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@fibjs/types": "^0.33.0"
+    "@fibjs/types": "latest"
   },
   "files": [
     "README.md",

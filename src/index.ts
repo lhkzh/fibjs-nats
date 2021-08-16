@@ -43,9 +43,12 @@ export class Nats extends events.EventEmitter {
     //执行回调中的数量
     private _bakIngNum: number = 0;
 
+    //等待重連中后發送數據的個數
+    private _waitToSendNum: number = 0;
+
     private _mainInbox: string;
     private _mainInbox_pre: string;
-    private _nextSid;
+    private _nextSid: bigint;
 
     constructor() {
         super();
@@ -84,11 +87,15 @@ export class Nats extends events.EventEmitter {
     /**
      * 用于分析当前链接状态
      */
-    public get stat() {
+    public toStatJson() {
         return {
+            ok: this._connection != null,
+            repair: this._reConnetIng != null,
+            pingIngNum: this._pingBacks.length,
             subNum: this._subs.size,
             topicNum: this._tops.size,
-            bakNum: this._bakIngNum
+            bakNum: this._bakIngNum,
+            waitToSendNum: this._waitToSendNum
         };
     }
 
@@ -161,6 +168,7 @@ export class Nats extends events.EventEmitter {
 
     private _do_connect(state: number) {
         let tmps = this._shuffle_server_list();
+        let isReconnected = state < 0;
         let retryNum = state > 0 ? state : (this._cfg.maxReconnectAttempts > 0 ? this._cfg.maxReconnectAttempts : 1);
         let suc_connection: NatsConnection;
         M:for (let i = 0; i < retryNum * tmps.length; i++) {
@@ -174,6 +182,13 @@ export class Nats extends events.EventEmitter {
                     }
                 } catch (e) {
                     console.error('Nats|open_fail', address.url, e.message);
+                }
+                if (isReconnected && (j + 1) == tmps.length) {
+                    try {
+                        this.emit(NatsEvent.OnReconnectFail, i);
+                    } catch (e2) {
+                        console.error('Nats|OnReconnectFail_emit', e2);
+                    }
                 }
                 if (this._cfg.reconnectWait > 0) {
                     if (this._cfg.noRandomize) {
@@ -190,7 +205,7 @@ export class Nats extends events.EventEmitter {
             console.warn("nats|connect", err.message);
             throw err;
         } else {
-            this._on_connect(suc_connection, state < 0);
+            this._on_connect(suc_connection, isReconnected);
             return this;
         }
     }
@@ -328,7 +343,7 @@ export class Nats extends events.EventEmitter {
      */
     public queueSubscribe(subject: string, queue: string, callBack: SubFn, limit?: number): NatsSub {
         let [subInfo, subCommdBuf] = this._pre_sub_local_first(subject, callBack, limit, queue);
-        this._send(subCommdBuf, true);
+        this._send(subCommdBuf, false);
         return subInfo;
     }
 
@@ -341,7 +356,7 @@ export class Nats extends events.EventEmitter {
      */
     public subscribe(subject: string, callBack: SubFn, limit?: number): NatsSub {
         let [subInfo, subCommdBuf] = this._pre_sub_local_first(subject, callBack, limit);
-        this._send(subCommdBuf, true);
+        this._send(subCommdBuf, false);
         return subInfo;
     }
 
@@ -443,7 +458,11 @@ export class Nats extends events.EventEmitter {
                 } else {
                     this._subs.get(sid).num = after;
                 }
-                this._send(Buffer.from(`UNSUB ${sid} ${after}${S_EOL}`), true);
+                try{
+                    this._send(Buffer.from(`UNSUB ${sid} ${after}${S_EOL}`), false);
+                }catch (ex){
+                    this._unsubscribe_fast(sid);
+                }
             }
         }
     }
@@ -592,9 +611,24 @@ export class Nats extends events.EventEmitter {
             this._connection.send(payload);
         } catch (err) {
             if (this._cfg.reconnect && retryWhenReconnect) {
-                this.once(NatsEvent.OnReconnectSuc, () => {
+                let _failNum = 0;
+                let _suc = () => {
+                    _cancel();
                     this._send(payload, retryWhenReconnect);
-                });
+                };
+                let _fail = () => {
+                    _failNum++;
+                    if (_failNum > this._cfg.waitToSendLimitMaxFail)
+                        _cancel();
+                };
+                let _cancel = () => {
+                    this._waitToSendNum--;
+                    this.off(NatsEvent.OnReconnectSuc, _suc);
+                    this.off(NatsEvent.OnReconnectFail, _fail);
+                }
+                this.once(NatsEvent.OnReconnectSuc, _suc);
+                this.once(NatsEvent.OnReconnectFail, _fail);
+                this._waitToSendNum++;
             } else {
                 throw err;
             }
@@ -819,6 +853,8 @@ export interface NatsConfig {
     noRandomize?: boolean,
     //重连最大次数
     maxReconnectAttempts?: number,
+    //等待发送限制最大重连次数（等待-重連成功發送-限制等少次）
+    waitToSendLimitMaxFail?: number,
 
     //name=客户端连接名字,
     name?: string,
@@ -868,6 +904,7 @@ const DefaultConfig: NatsConfig = {
     reconnectWait: 250,
     maxReconnectAttempts: 86400,
     maxPingOut: 9,
+    waitToSendLimitMaxFail: 9,
     noEcho: false,
     verbose: false,
     pedantic: false
