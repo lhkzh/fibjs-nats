@@ -1154,7 +1154,7 @@ class NatsSocket extends NatsConnection {
         let info: NatsServerInfo, auth_err: Error;
         try {
             sock = <any>net.connect("tcp://" + addr_str, addr_timeout);
-            sock.timeout = 0;
+            sock.timeout = -1;
             let stream = new BufferedStream(sock);
             stream.EOL = S_EOL;
             let infoStr = stream.readLine(512);
