@@ -16,7 +16,7 @@ const queryString = require("querystring");
 const events_1 = require("events");
 const io_1 = require("io");
 const http = require("http");
-exports.VERSION = "1.1.6";
+exports.VERSION = "1.2.7";
 exports.LANG = "fibjs";
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
@@ -614,7 +614,9 @@ class Nats extends events.EventEmitter {
                     }
                 }
                 sop.fn(data, meta);
-                this.emit(subject, data);
+                if (this._cfg.subjectAsEvent) {
+                    this.emit(subject, data);
+                }
             }
             else if (inbox) { //队列选了当前执行节点，但是当前节点给取消订阅了
                 this.publishInbox(subject, inbox, payload);
@@ -627,11 +629,13 @@ class Nats extends events.EventEmitter {
     }
     _on_connect(connection, isReconnected) {
         this._connection = connection;
-        connection.on("pong", this._on_pong.bind(this));
-        connection.on("msg", this._on_msg.bind(this));
         connection.on("close", this._on_lost.bind(this));
-        connection.on("ok", this._on_ok.bind(this));
         connection.on("err", this._on_err.bind(this));
+        connection.on("pong", this._on_pong.bind(this));
+        // connection.on("ok", this._on_ok.bind(this));
+        // connection.on("msg", this._on_msg.bind(this));
+        connection._on_ok = this._on_ok.bind(this);
+        connection._on_msg = this._on_msg.bind(this);
         let tmpArr = [`SUB ${this._mainInbox} ${this._pre_sub_mainInbox()}${S_EOL}`];
         for (let e of this._subs.values()) {
             if (e.queue) {
@@ -875,11 +879,23 @@ class NatsConnection extends events_1.EventEmitter {
                     buf = buf.slice(buf.length >= endCloseIdx ? endCloseIdx : endIdx);
                     offset = 0;
                     //["msg", subject,sid,data,inbox]
-                    this.fire("msg", arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
+                    // this.fire("msg", arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
+                    try {
+                        this["_on_msg"](arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
+                    }
+                    catch (e) {
+                        console.error(`process_nats:msg:${arr[1]}`, e);
+                    }
                 }
                 else {
                     if (buf[2] == BIT_2_OK) { // +OK
-                        this.fire("ok");
+                        // this.fire("ok");
+                        try {
+                            this["_on_ok"]();
+                        }
+                        catch (e) {
+                            console.error(`process_nats:ok`, e);
+                        }
                     }
                     else if (buf[1] == BIT_1_PING) { //PING
                         this.send(B_PONG_EOL);

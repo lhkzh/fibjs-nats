@@ -15,7 +15,7 @@ import {EventEmitter} from "events";
 import {BufferedStream} from "io";
 import * as http from "http";
 
-export const VERSION = "1.1.6";
+export const VERSION = "1.2.7";
 export const LANG = "fibjs";
 
 /**
@@ -656,7 +656,9 @@ export class Nats extends events.EventEmitter {
                     }
                 }
                 sop.fn(data, meta);
-                this.emit(subject, data);
+                if(this._cfg.subjectAsEvent){
+                    this.emit(subject, data);
+                }
             } else if (inbox) {//队列选了当前执行节点，但是当前节点给取消订阅了
                 this.publishInbox(subject, inbox, payload);
             }
@@ -668,11 +670,13 @@ export class Nats extends events.EventEmitter {
 
     private _on_connect(connection: NatsConnection, isReconnected) {
         this._connection = connection;
-        connection.on("pong", this._on_pong.bind(this));
-        connection.on("msg", this._on_msg.bind(this));
         connection.on("close", this._on_lost.bind(this));
-        connection.on("ok", this._on_ok.bind(this));
         connection.on("err", this._on_err.bind(this));
+        connection.on("pong", this._on_pong.bind(this));
+        // connection.on("ok", this._on_ok.bind(this));
+        // connection.on("msg", this._on_msg.bind(this));
+        connection._on_ok = this._on_ok.bind(this);
+        connection._on_msg = this._on_msg.bind(this);
         let tmpArr = [`SUB ${this._mainInbox} ${this._pre_sub_mainInbox()}${S_EOL}`];
         for (let e of this._subs.values()) {
             if (e.queue) {
@@ -874,6 +878,9 @@ export interface NatsConfig {
 
     //特殊认证
     authenticator?: (nonce?: string) => { nkey?: string, sig: string, jwt?: string, auth_token?: string, user?: string, pass?: string },
+
+    //subject_fire_event
+    subjectAsEvent?:boolean
 }
 
 type NatsConnectCfg_Mult = NatsConfig & { servers?: Array<string | NatsAddress> };
@@ -918,6 +925,9 @@ abstract class NatsConnection extends EventEmitter {
 
     public echo: boolean;
     public verbose: boolean;
+
+    public _on_msg: Function;
+    public _on_ok: Function;
 
     constructor(protected _cfg: NatsConfig, protected _addr: NatsAddress, protected _info: NatsServerInfo) {
         super();
@@ -1016,10 +1026,20 @@ abstract class NatsConnection extends EventEmitter {
                     buf = buf.slice(buf.length >= endCloseIdx ? endCloseIdx : endIdx);
                     offset = 0;
                     //["msg", subject,sid,data,inbox]
-                    this.fire("msg", arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
+                    // this.fire("msg", arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
+                    try{
+                        this["_on_msg"](arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
+                    }catch (e){
+                        console.error(`process_nats:msg:${arr[1]}`, e);
+                    }
                 } else {
                     if (buf[2] == BIT_2_OK) {// +OK
-                        this.fire("ok");
+                        // this.fire("ok");
+                        try{
+                            this["_on_ok"]();
+                        }catch (e){
+                            console.error(`process_nats:ok`, e);
+                        }
                     } else if (buf[1] == BIT_1_PING) {//PING
                         this.send(B_PONG_EOL);
                     } else if (buf[1] == BIT_1_PONG) {//PONG
