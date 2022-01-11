@@ -1,6 +1,6 @@
 /// <reference types="@fibjs/types" />
 import * as events from "events";
-export declare const VERSION = "1.1.2";
+export declare const VERSION = "1.1.6";
 export declare const LANG = "fibjs";
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）

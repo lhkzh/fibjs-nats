@@ -15,7 +15,7 @@ import {EventEmitter} from "events";
 import {BufferedStream} from "io";
 import * as http from "http";
 
-export const VERSION = "1.1.2";
+export const VERSION = "1.1.6";
 export const LANG = "fibjs";
 
 /**
@@ -757,12 +757,13 @@ export class Nats extends events.EventEmitter {
     }
 
     //构建一个-并主动链接
-    public static make(cfg?: string | NatsAddress | NatsConnectCfg, tryInitRetryNum: number = 9) {
+    public static make(cfg: string | NatsAddress | NatsConnectCfg="nats://127.0.0.1:4222", tryInitRetryNum: number = 9) {
+        if(typeof cfg=="string"){
+            cfg = {url: cfg.toString()};
+        }
         let imp = new Nats();
         let conf: NatsConfig;
-        if (typeof (cfg) == "string") {
-            imp.addServer(cfg);
-        } else if ((<NatsConnectCfg_Mult>cfg).servers) {
+        if ((<NatsConnectCfg_Mult>cfg).servers) {
             (<NatsConnectCfg_Mult>cfg).servers.forEach(e => {
                 imp.addServer(e);
             });
@@ -778,11 +779,11 @@ export class Nats extends events.EventEmitter {
         imp._cfg = conf || {...DefaultConfig};
         if (imp._cfg.serizalize == null) {
             if (imp._cfg["json"]) {
-                conf.serizalize = NatsSerizalize_Json;
+                imp._cfg.serizalize = NatsSerizalize_Json;
             } else if (imp._cfg["msgpack"]) {
-                conf.serizalize = NatsSerizalize_Msgpack;
+                imp._cfg.serizalize = NatsSerizalize_Msgpack;
             } else {
-                conf.serizalize = NatsSerizalize_Buf;
+                imp._cfg.serizalize = NatsSerizalize_Buf;
             }
         }
         return imp._do_connect(Math.max(1, tryInitRetryNum));
@@ -957,13 +958,11 @@ abstract class NatsConnection extends EventEmitter {
     }
 
     protected fire(evt: string, ...args) {
-        coroutine.start(() => {
-            try {
-                this.emit(evt, ...args);
-            } catch (e) {
-                console.error("process_nats:" + evt, e);
-            }
-        });
+        try {
+            this.emit(evt, ...args);
+        } catch (e) {
+            console.error(`process_nats:${evt}`, e);
+        }
     }
 
     abstract send(payload: Class_Buffer): void;

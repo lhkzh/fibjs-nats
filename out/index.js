@@ -16,7 +16,7 @@ const queryString = require("querystring");
 const events_1 = require("events");
 const io_1 = require("io");
 const http = require("http");
-exports.VERSION = "1.1.2";
+exports.VERSION = "1.1.6";
 exports.LANG = "fibjs";
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
@@ -711,13 +711,13 @@ class Nats extends events.EventEmitter {
         return this._cfg.serizalize;
     }
     //构建一个-并主动链接
-    static make(cfg, tryInitRetryNum = 9) {
+    static make(cfg = "nats://127.0.0.1:4222", tryInitRetryNum = 9) {
+        if (typeof cfg == "string") {
+            cfg = { url: cfg.toString() };
+        }
         let imp = new Nats();
         let conf;
-        if (typeof (cfg) == "string") {
-            imp.addServer(cfg);
-        }
-        else if (cfg.servers) {
+        if (cfg.servers) {
             cfg.servers.forEach(e => {
                 imp.addServer(e);
             });
@@ -735,13 +735,13 @@ class Nats extends events.EventEmitter {
         imp._cfg = conf || { ...DefaultConfig };
         if (imp._cfg.serizalize == null) {
             if (imp._cfg["json"]) {
-                conf.serizalize = exports.NatsSerizalize_Json;
+                imp._cfg.serizalize = exports.NatsSerizalize_Json;
             }
             else if (imp._cfg["msgpack"]) {
-                conf.serizalize = exports.NatsSerizalize_Msgpack;
+                imp._cfg.serizalize = exports.NatsSerizalize_Msgpack;
             }
             else {
-                conf.serizalize = exports.NatsSerizalize_Buf;
+                imp._cfg.serizalize = exports.NatsSerizalize_Buf;
             }
         }
         return imp._do_connect(Math.max(1, tryInitRetryNum));
@@ -824,14 +824,12 @@ class NatsConnection extends events_1.EventEmitter {
         return this._info;
     }
     fire(evt, ...args) {
-        coroutine.start(() => {
-            try {
-                this.emit(evt, ...args);
-            }
-            catch (e) {
-                console.error("process_nats:" + evt, e);
-            }
-        });
+        try {
+            this.emit(evt, ...args);
+        }
+        catch (e) {
+            console.error(`process_nats:${evt}`, e);
+        }
     }
     _fn_close() {
     }
@@ -1016,7 +1014,7 @@ class NatsSocket extends NatsConnection {
         let info, auth_err;
         try {
             sock = net.connect("tcp://" + addr_str, addr_timeout);
-            sock.timeout = 0;
+            sock.timeout = -1;
             let stream = new io_1.BufferedStream(sock);
             stream.EOL = S_EOL;
             let infoStr = stream.readLine(512);
