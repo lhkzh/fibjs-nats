@@ -15,7 +15,7 @@ import {EventEmitter} from "events";
 import {BufferedStream} from "io";
 import * as http from "http";
 
-export const VERSION = "1.2.7";
+export const VERSION = "1.2.8";
 export const LANG = "fibjs";
 
 /**
@@ -262,14 +262,6 @@ export class Nats extends events.EventEmitter {
         return evt.rsp;
     }
 
-    private _on_mainInbox(data: any, meta: { subject: string, sid: string }) {
-        let f = this._responses.get(meta.subject);
-        if (f) {
-            this._responses.delete(meta.subject);
-            f(data);
-        }
-    }
-
     /**
      * 检测是否能连通
      */
@@ -363,7 +355,17 @@ export class Nats extends events.EventEmitter {
     private _pre_sub_mainInbox() {
         let sid = "0";
         this._subs.set(sid, {
-            subject: this._mainInbox, sid: sid, fn: this._on_mainInbox.bind(this), cancel: () => {
+            subject: this._mainInbox, sid: sid,
+            fn: (data: any, meta: { subject: string, sid: string }, err?:string)=>{
+                let f = this._responses.get(meta.subject);
+                if (f) {
+                    // this._responses.delete(meta.subject);
+                    f(data, meta, err);
+                } else {
+                    console.error("nats-response-miss", meta.subject, JSON.stringify(data));
+                }
+            },
+            cancel: () => {
             }
         });
         return sid;
@@ -668,6 +670,19 @@ export class Nats extends events.EventEmitter {
         }
     }
 
+    protected _on_hmsg(subject: string, sid: string, payload: Class_Buffer) {
+        let sop = this._subs.get(sid);
+        try {
+            this._bakIngNum++;
+            if(sop){
+                (<any>sop.fn)(null, {subject:subject}, new Error(payload.toString()));
+            }
+        } catch (e) {
+            console.error("nats|on_hmsg", e);
+            this._bakIngNum--;
+        }
+    }
+
     private _on_connect(connection: NatsConnection, isReconnected) {
         this._connection = connection;
         connection.on("close", this._on_lost.bind(this));
@@ -675,8 +690,10 @@ export class Nats extends events.EventEmitter {
         connection.on("pong", this._on_pong.bind(this));
         // connection.on("ok", this._on_ok.bind(this));
         // connection.on("msg", this._on_msg.bind(this));
+        // connection.on("hmsg", this._on_hmsg.bind(this));
         connection._on_ok = this._on_ok.bind(this);
         connection._on_msg = this._on_msg.bind(this);
+        connection._on_hmsg = this._on_hmsg.bind(this);
         let tmpArr = [`SUB ${this._mainInbox} ${this._pre_sub_mainInbox()}${S_EOL}`];
         for (let e of this._subs.values()) {
             if (e.queue) {
@@ -927,6 +944,7 @@ abstract class NatsConnection extends EventEmitter {
     public verbose: boolean;
 
     public _on_msg: Function;
+    public _on_hmsg: Function;
     public _on_ok: Function;
 
     constructor(protected _cfg: NatsConfig, protected _addr: NatsAddress, protected _info: NatsServerInfo) {
@@ -1014,7 +1032,7 @@ abstract class NatsConnection extends EventEmitter {
                 buf = buf.slice(2);
                 offset = 0;
             } else {
-                if (buf[1] == BIG_1_MSG) {
+                if (buf[1] == BIG_1_MSG) {//MSG
                     let line = buf.slice(0, idx), fromIdx = idx + 2;
                     //MSG subject sid size
                     let arr = line.toString().split(" "),
@@ -1028,7 +1046,23 @@ abstract class NatsConnection extends EventEmitter {
                     //["msg", subject,sid,data,inbox]
                     // this.fire("msg", arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
                     try{
-                        this["_on_msg"](arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
+                        this._on_msg(arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
+                    }catch (e){
+                        console.error(`process_nats:msg:${arr[1]}`, e);
+                    }
+                } else if(buf[1]==BIG_1_HMSG){
+                    let line = buf.slice(0, idx), fromIdx = idx + 2;
+                    let arr = line.toString().split(" "),
+                        len: number = Number(arr[arr.length - 1]);
+                    if (buf.length < (fromIdx + len)) {
+                        break;
+                    }
+                    let endIdx = fromIdx + len, endCloseIdx = endIdx + 2, data = buf.slice(fromIdx, endIdx);
+                    buf = buf.slice(buf.length >= endCloseIdx ? endCloseIdx : endIdx);
+                    offset = 0;
+                    // console.log("["+data.toString()+"]", arr[1], arr[2])
+                    try{
+                        this._on_hmsg(arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
                     }catch (e){
                         console.error(`process_nats:msg:${arr[1]}`, e);
                     }
@@ -1036,7 +1070,7 @@ abstract class NatsConnection extends EventEmitter {
                     if (buf[2] == BIT_2_OK) {// +OK
                         // this.fire("ok");
                         try{
-                            this["_on_ok"]();
+                            this._on_ok();
                         }catch (e){
                             console.error(`process_nats:ok`, e);
                         }
@@ -1341,7 +1375,7 @@ class WaitTimeoutEvt<T> extends WaitEvt<T> {
     }
 
     public cbk() {
-        return (d, e) => {
+        return (d, _, e) => {
             if (e) {
                 this.fail(e);
             } else {
@@ -1399,3 +1433,4 @@ const BIT_2_OK: number = Buffer.from("+OK")[2];
 const BIT_1_PING: number = Buffer.from('PING')[1];
 const BIT_1_PONG: number = Buffer.from('PONG')[1];
 const BIG_1_MSG: number = Buffer.from('MSG')[1];
+const BIG_1_HMSG: number = Buffer.from('HMSG')[1];

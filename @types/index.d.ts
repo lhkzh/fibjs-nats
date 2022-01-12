@@ -1,6 +1,6 @@
 /// <reference types="@fibjs/types" />
 import * as events from "events";
-export declare const VERSION = "1.2.7";
+export declare const VERSION = "1.2.8";
 export declare const LANG = "fibjs";
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
@@ -69,7 +69,6 @@ export declare class Nats extends events.EventEmitter {
      * 检测是否能连通
      */
     ping(): boolean;
-    private _on_mainInbox;
     /**
      * 检测是否能连通
      */
@@ -157,6 +156,7 @@ export declare class Nats extends events.EventEmitter {
     private _pub_blob_3;
     protected _send(payload: any, retryWhenReconnect: boolean): void;
     protected _on_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string): void;
+    protected _on_hmsg(subject: string, sid: string, payload: Class_Buffer): void;
     private _on_connect;
     private _on_err;
     private _on_ok;

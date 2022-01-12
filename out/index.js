@@ -16,7 +16,7 @@ const queryString = require("querystring");
 const events_1 = require("events");
 const io_1 = require("io");
 const http = require("http");
-exports.VERSION = "1.2.7";
+exports.VERSION = "1.2.8";
 exports.LANG = "fibjs";
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
@@ -241,13 +241,6 @@ class Nats extends events.EventEmitter {
         evt.wait();
         return evt.rsp;
     }
-    _on_mainInbox(data, meta) {
-        let f = this._responses.get(meta.subject);
-        if (f) {
-            this._responses.delete(meta.subject);
-            f(data);
-        }
-    }
     /**
      * 检测是否能连通
      */
@@ -337,7 +330,18 @@ class Nats extends events.EventEmitter {
     _pre_sub_mainInbox() {
         let sid = "0";
         this._subs.set(sid, {
-            subject: this._mainInbox, sid: sid, fn: this._on_mainInbox.bind(this), cancel: () => {
+            subject: this._mainInbox, sid: sid,
+            fn: (data, meta, err) => {
+                let f = this._responses.get(meta.subject);
+                if (f) {
+                    // this._responses.delete(meta.subject);
+                    f(data, meta, err);
+                }
+                else {
+                    console.error("nats-response-miss", meta.subject, JSON.stringify(data));
+                }
+            },
+            cancel: () => {
             }
         });
         return sid;
@@ -627,6 +631,19 @@ class Nats extends events.EventEmitter {
             this._bakIngNum--;
         }
     }
+    _on_hmsg(subject, sid, payload) {
+        let sop = this._subs.get(sid);
+        try {
+            this._bakIngNum++;
+            if (sop) {
+                sop.fn(null, { subject: subject }, new Error(payload.toString()));
+            }
+        }
+        catch (e) {
+            console.error("nats|on_hmsg", e);
+            this._bakIngNum--;
+        }
+    }
     _on_connect(connection, isReconnected) {
         this._connection = connection;
         connection.on("close", this._on_lost.bind(this));
@@ -634,8 +651,10 @@ class Nats extends events.EventEmitter {
         connection.on("pong", this._on_pong.bind(this));
         // connection.on("ok", this._on_ok.bind(this));
         // connection.on("msg", this._on_msg.bind(this));
+        // connection.on("hmsg", this._on_hmsg.bind(this));
         connection._on_ok = this._on_ok.bind(this);
         connection._on_msg = this._on_msg.bind(this);
+        connection._on_hmsg = this._on_hmsg.bind(this);
         let tmpArr = [`SUB ${this._mainInbox} ${this._pre_sub_mainInbox()}${S_EOL}`];
         for (let e of this._subs.values()) {
             if (e.queue) {
@@ -868,7 +887,7 @@ class NatsConnection extends events_1.EventEmitter {
                 offset = 0;
             }
             else {
-                if (buf[1] == BIG_1_MSG) {
+                if (buf[1] == BIG_1_MSG) { //MSG
                     let line = buf.slice(0, idx), fromIdx = idx + 2;
                     //MSG subject sid size
                     let arr = line.toString().split(" "), len = Number(arr[arr.length - 1]);
@@ -881,7 +900,24 @@ class NatsConnection extends events_1.EventEmitter {
                     //["msg", subject,sid,data,inbox]
                     // this.fire("msg", arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
                     try {
-                        this["_on_msg"](arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
+                        this._on_msg(arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
+                    }
+                    catch (e) {
+                        console.error(`process_nats:msg:${arr[1]}`, e);
+                    }
+                }
+                else if (buf[1] == BIG_1_HMSG) {
+                    let line = buf.slice(0, idx), fromIdx = idx + 2;
+                    let arr = line.toString().split(" "), len = Number(arr[arr.length - 1]);
+                    if (buf.length < (fromIdx + len)) {
+                        break;
+                    }
+                    let endIdx = fromIdx + len, endCloseIdx = endIdx + 2, data = buf.slice(fromIdx, endIdx);
+                    buf = buf.slice(buf.length >= endCloseIdx ? endCloseIdx : endIdx);
+                    offset = 0;
+                    // console.log("["+data.toString()+"]", arr[1], arr[2])
+                    try {
+                        this._on_hmsg(arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
                     }
                     catch (e) {
                         console.error(`process_nats:msg:${arr[1]}`, e);
@@ -891,7 +927,7 @@ class NatsConnection extends events_1.EventEmitter {
                     if (buf[2] == BIT_2_OK) { // +OK
                         // this.fire("ok");
                         try {
-                            this["_on_ok"]();
+                            this._on_ok();
                         }
                         catch (e) {
                             console.error(`process_nats:ok`, e);
@@ -1191,7 +1227,7 @@ class WaitTimeoutEvt extends WaitEvt {
         super.set();
     }
     cbk() {
-        return (d, e) => {
+        return (d, _, e) => {
             if (e) {
                 this.fail(e);
             }
@@ -1250,3 +1286,4 @@ const BIT_2_OK = Buffer.from("+OK")[2];
 const BIT_1_PING = Buffer.from('PING')[1];
 const BIT_1_PONG = Buffer.from('PONG')[1];
 const BIG_1_MSG = Buffer.from('MSG')[1];
+const BIG_1_HMSG = Buffer.from('HMSG')[1];
