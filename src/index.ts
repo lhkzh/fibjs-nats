@@ -603,9 +603,18 @@ export class Nats extends events.EventEmitter {
         return Buffer.concat([Buffer.from(`${S_PUB} ${subject} ${inbox} ${pb.length} ${S_EOL}`), pb, B_EOL]);
     }
 
-    private _pub_blob_3(preCommandBuf: Class_Buffer, subject: string, inbox: string, pb: Class_Buffer) {
-        // return Buffer.concat([B_PUB, Buffer.from(subject), B_SPACE, Buffer.from(inbox), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]);
-        return Buffer.concat([preCommandBuf, Buffer.from(`${S_PUB} ${subject} ${inbox} ${pb.length} ${S_EOL}`), pb, B_EOL]);
+    /**
+     * 多条合批发布
+     * @param list
+     * @param retryWhenReconnec
+     */
+    public publishMult(list:Array<{subject:string, payload?:any}>, retryWhenReconnec=false){
+        let bufs:Class_Buffer[] = [], pb:Class_Buffer;
+        for(var e of list){
+            pb = this.encode(e.payload);
+            bufs.push(Buffer.from(`${S_PUB} ${e.subject} ${pb.length} ${S_EOL}`), pb, B_EOL);
+        }
+        this._send(Buffer.concat(bufs), retryWhenReconnec);
     }
 
     protected _send(payload, retryWhenReconnect: boolean) {
@@ -723,7 +732,7 @@ export class Nats extends events.EventEmitter {
         console.error("nats_on_err", JSON.stringify(evt), JSON.stringify(this.address));
     }
 
-    private _on_ok() {
+    protected _on_ok() {
     }
 
     private _on_lost() {
@@ -824,7 +833,6 @@ type SubFn = (data: any, meta?: { subject: string, sid: string, reply?: (replyDa
 //侦听器-结构描述
 export type NatsSub = { subject: string, sid: string, fn: SubFn, num?: number, queue?: string, cancel: () => void };
 
-//{"server_id":"NDKOPUBNP4IRWW2UGWBNJ2VNNCWNBO3BTJXBDJ7JIA77ZVENDQF6U7QC","version":"2.0.4","proto":1,"git_commit":"c8ca58e","go":"go1.12.8","host":"0.0.0.0","port":4222,"max_payload":1048576,"client_id":20}
 /**
  * 服务器信息描述
  */

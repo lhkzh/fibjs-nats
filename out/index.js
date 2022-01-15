@@ -563,9 +563,18 @@ class Nats extends events.EventEmitter {
         // return Buffer.concat([B_PUB, Buffer.from(subject), B_SPACE, Buffer.from(inbox), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]);
         return Buffer.concat([Buffer.from(`${S_PUB} ${subject} ${inbox} ${pb.length} ${S_EOL}`), pb, B_EOL]);
     }
-    _pub_blob_3(preCommandBuf, subject, inbox, pb) {
-        // return Buffer.concat([B_PUB, Buffer.from(subject), B_SPACE, Buffer.from(inbox), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]);
-        return Buffer.concat([preCommandBuf, Buffer.from(`${S_PUB} ${subject} ${inbox} ${pb.length} ${S_EOL}`), pb, B_EOL]);
+    /**
+     * 多条合批发布
+     * @param list
+     * @param retryWhenReconnec
+     */
+    publishMult(list, retryWhenReconnec = false) {
+        let bufs = [], pb;
+        for (var e of list) {
+            pb = this.encode(e.payload);
+            bufs.push(Buffer.from(`${S_PUB} ${e.subject} ${pb.length} ${S_EOL}`), pb, B_EOL);
+        }
+        this._send(Buffer.concat(bufs), retryWhenReconnec);
     }
     _send(payload, retryWhenReconnect) {
         try {

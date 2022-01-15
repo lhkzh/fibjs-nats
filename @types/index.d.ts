@@ -153,13 +153,21 @@ export declare class Nats extends events.EventEmitter {
     publishInbox(subject: string, inbox: string, payload: any): void;
     private _pub_blob_1;
     private _pub_blob_2;
-    private _pub_blob_3;
+    /**
+     * 多条合批发布
+     * @param list
+     * @param retryWhenReconnec
+     */
+    publishMult(list: Array<{
+        subject: string;
+        payload?: any;
+    }>, retryWhenReconnec?: boolean): void;
     protected _send(payload: any, retryWhenReconnect: boolean): void;
     protected _on_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string): void;
     protected _on_hmsg(subject: string, sid: string, payload: Class_Buffer): void;
     private _on_connect;
     private _on_err;
-    private _on_ok;
+    protected _on_ok(): void;
     private _on_lost;
     protected _on_pong(is_lost: boolean): void;
     protected encode(payload: any): Class_Buffer;
