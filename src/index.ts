@@ -7,13 +7,13 @@ import * as net from "net";
 import * as ws from "ws";
 import * as ssl from "ssl";
 import * as crypto from "crypto";
-import {nuid} from "./Nuid";
-import {msgpack} from "encoding";
-import {parse} from "url";
 import * as queryString from "querystring";
-import {EventEmitter} from "events";
-import {BufferedStream} from "io";
 import * as http from "http";
+import { nuid } from "./Nuid";
+import { msgpack } from "encoding";
+import { parse } from "url";
+import { EventEmitter } from "events";
+import { BufferedStream } from "io";
 
 export const VERSION = "1.2.8";
 export const LANG = "fibjs";
@@ -52,7 +52,7 @@ export class Nats extends events.EventEmitter {
 
     constructor() {
         super();
-        this._tops_x = {incr: this._subject_incr.bind(this), decr: this._subject_decr.bind(this)};
+        this._tops_x = { incr: this._subject_incr.bind(this), decr: this._subject_decr.bind(this) };
         this._subject_incr = this._subject_x;
         this._subject_decr = this._subject_x;
         this._nextSid = 1n;
@@ -171,7 +171,7 @@ export class Nats extends events.EventEmitter {
         let isReconnected = state < 0;
         let retryNum = state > 0 ? state : (this._cfg.maxReconnectAttempts > 0 ? this._cfg.maxReconnectAttempts : 1);
         let suc_connection: NatsConnection;
-        M:for (let i = 0; i < retryNum * tmps.length; i++) {
+        M: for (let i = 0; i < retryNum * tmps.length; i++) {
             for (let j = 0; j < tmps.length; j++) {
                 let address = tmps[j];
                 try {
@@ -213,7 +213,7 @@ export class Nats extends events.EventEmitter {
     private _shuffle_server_list() {
         let a = this._serverList.concat();
         if (a.length < 1) {
-            a = [{...DefaultAddress}];
+            a = [{ ...DefaultAddress }];
         }
         for (let i = a.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
@@ -272,17 +272,84 @@ export class Nats extends events.EventEmitter {
     }
 
     /**
+     * 请求接口（非queue方式的，多个侦听回调收集模式）
+     * @param subject
+     * @param payload
+     */
+    public requestCollectAsync(subject: string, payload: any, opts: { timeout?: number, wait?: number } = { timeout: 3000, wait: 30 }): Promise<any> {
+        const timeoutTtl = opts.timeout || 3000;
+        const timeoutWait = opts.wait || 30;
+        return new Promise<any>((resolve, reject) => {
+            let responses = this._responses, rsp_timer, rsp_arr = [],
+                inbox: string,
+                cbk = (rsp, _, err) => {
+                    if (!rsp_timer) {
+                        clearTimeout(timer);
+                    }
+                    if (err) {
+                        responses.delete(inbox);
+                        reject(err);
+                    } else {
+                        rsp_arr.push(rsp);
+                        if (!rsp_timer) {
+                            rsp_timer = setTimeout(() => {
+                                responses.delete(inbox);
+                                resolve(rsp_arr);
+                            }, timeoutWait);
+                        }
+                    }
+                }, timer: Class_Timer = setTimeout(() => {
+                    cbk(null, null, "nats_request_timeout:" + subject);
+                }, timeoutTtl);
+
+            try {
+                inbox = this._mainInbox_pre + (this._nextSid++).toString();
+                responses.set(inbox, cbk);
+                this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), false);
+            } catch (e) {
+                cbk(null, null, e);
+            }
+        });
+    }
+    /**
+     * 同步-请求接口（非queue方式的，多个侦听回调收集模式）
+     * @param subject
+     * @param payload
+     */
+    public requestCollect(subject: string, payload: any, opts: { timeout?: number, wait?: number } = { timeout: 3000, wait: 30 }): any {
+        let evt = new WaitTimeout2Evt<any>(opts.timeout || 3000, opts.wait || 30), evt_cbk = evt.cbk(), inbox: string;
+        let responses = this._responses;
+        try {
+            inbox = this._mainInbox_pre + (this._nextSid++).toString();
+            responses.set(inbox, evt_cbk);
+            this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), false);
+            evt.wait();
+        } catch (e) {
+            evt.fail(e);
+        }
+        responses.delete(inbox);
+        if (evt.err) {
+            if (evt.err === WaitTimeoutEvt.TimeOutErr) {
+                evt.err = new Error(`nats_request_timeout:${subject}`);
+            }
+            throw evt.err;
+        }
+        return evt.rsp;
+    }
+    
+    /**
      * 请求接口
      * @param subject
      * @param payload
      */
     public requestAsync(subject: string, payload: any, timeoutTtl: number = 3000): Promise<any> {
         return new Promise<any>((resolve, reject) => {
-            let inbox: string,
+            let responses = this._responses,
+                inbox: string,
                 cbk = (rsp, _, err) => {
                     clearTimeout(timer);
+                    responses.delete(inbox);
                     if (err) {
-                        this._responses.delete(inbox);
                         reject(err);
                     } else {
                         resolve(rsp);
@@ -293,7 +360,7 @@ export class Nats extends events.EventEmitter {
 
             try {
                 inbox = this._mainInbox_pre + (this._nextSid++).toString();
-                this._responses.set(inbox, cbk);
+                responses.set(inbox, cbk);
                 this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), false);
             } catch (e) {
                 cbk(null, null, e);
@@ -308,16 +375,17 @@ export class Nats extends events.EventEmitter {
      */
     public request(subject: string, payload: any, timeoutTtl: number = 3000): any {
         let evt = new WaitTimeoutEvt<any>(timeoutTtl), evt_cbk = evt.cbk(), inbox: string;
+        let responses = this._responses;
         try {
             inbox = this._mainInbox_pre + (this._nextSid++).toString();
-            this._responses.set(inbox, evt_cbk);
+            responses.set(inbox, evt_cbk);
             this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), false);
             evt.wait();
         } catch (e) {
             evt.fail(e);
         }
+        responses.delete(inbox);
         if (evt.err) {
-            this._responses.delete(inbox);
             if (evt.err === WaitTimeoutEvt.TimeOutErr) {
                 evt.err = new Error(`nats_request_timeout:${subject}`);
             }
@@ -334,8 +402,8 @@ export class Nats extends events.EventEmitter {
      * @param limit
      */
     public queueSubscribe(subject: string, queue: string, callBack: SubFn, limit?: number): NatsSub {
-        let [subInfo, subCommdBuf] = this._pre_sub_local_first(subject, callBack, limit, queue);
-        this._send(subCommdBuf, false);
+        let [subInfo, commandBuf] = this._pre_sub_local_first(subject, callBack, limit, queue);
+        this._send(commandBuf, false);
         return subInfo;
     }
 
@@ -347,8 +415,8 @@ export class Nats extends events.EventEmitter {
      * @returns 订阅的编号
      */
     public subscribe(subject: string, callBack: SubFn, limit?: number): NatsSub {
-        let [subInfo, subCommdBuf] = this._pre_sub_local_first(subject, callBack, limit);
-        this._send(subCommdBuf, false);
+        let [subInfo, commandBuf] = this._pre_sub_local_first(subject, callBack, limit);
+        this._send(commandBuf, false);
         return subInfo;
     }
 
@@ -356,7 +424,7 @@ export class Nats extends events.EventEmitter {
         let sid = "0";
         this._subs.set(sid, {
             subject: this._mainInbox, sid: sid,
-            fn: (data: any, meta: { subject: string, sid: string }, err?:string)=>{
+            fn: (data: any, meta: { subject: string, sid: string }, err?: string) => {
                 let f = this._responses.get(meta.subject);
                 if (f) {
                     // this._responses.delete(meta.subject);
@@ -460,9 +528,9 @@ export class Nats extends events.EventEmitter {
                 } else {
                     this._subs.get(sid).num = after;
                 }
-                try{
+                try {
                     this._send(Buffer.from(`UNSUB ${sid} ${after}${S_EOL}`), false);
-                }catch (ex){
+                } catch (ex) {
                     this._unsubscribe_fast(sid);
                 }
             }
@@ -658,7 +726,7 @@ export class Nats extends events.EventEmitter {
                     }
                 }
                 sop.fn(data, meta);
-                if(this._cfg.subjectAsEvent){
+                if (this._cfg.subjectAsEvent) {
                     this.emit(subject, data);
                 }
             } else if (inbox) {//队列选了当前执行节点，但是当前节点给取消订阅了
@@ -674,8 +742,8 @@ export class Nats extends events.EventEmitter {
         let sop = this._subs.get(sid);
         try {
             this._bakIngNum++;
-            if(sop){
-                (<any>sop.fn)(null, {subject:subject}, new Error(payload.toString()));
+            if (sop) {
+                (<any>sop.fn)(null, { subject: subject }, new Error(payload.toString()));
             }
         } catch (e) {
             console.error("nats|on_hmsg", e);
@@ -778,9 +846,9 @@ export class Nats extends events.EventEmitter {
     }
 
     //构建一个-并主动链接
-    public static make(cfg: string | NatsAddress | NatsConnectCfg="nats://127.0.0.1:4222", tryInitRetryNum: number = 9) {
-        if(typeof cfg=="string"){
-            cfg = {url: cfg.toString()};
+    public static make(cfg: string | NatsAddress | NatsConnectCfg = "nats://127.0.0.1:4222", tryInitRetryNum: number = 9) {
+        if (typeof cfg == "string") {
+            cfg = { url: cfg.toString() };
         }
         let imp = new Nats();
         let conf: NatsConfig;
@@ -788,16 +856,16 @@ export class Nats extends events.EventEmitter {
             (<NatsConnectCfg_Mult>cfg).servers.forEach(e => {
                 imp.addServer(e);
             });
-            conf = {...DefaultConfig, ...cfg};
+            conf = { ...DefaultConfig, ...cfg };
             delete conf["servers"];
         } else if (typeof ((<NatsConnectCfg_One>cfg).url) != "string" || Object.values(cfg).some(e => typeof (e) != "string")) {
             imp.addServer((<NatsConnectCfg_One>cfg).url);
-            conf = {...DefaultConfig, ...cfg};
+            conf = { ...DefaultConfig, ...cfg };
             delete conf["url"];
         } else {
             imp.addServer(<NatsAddress>cfg);
         }
-        imp._cfg = conf || {...DefaultConfig};
+        imp._cfg = conf || { ...DefaultConfig };
         if (imp._cfg.serizalize == null) {
             if (imp._cfg["json"]) {
                 imp._cfg.serizalize = NatsSerizalize_Json;
@@ -897,7 +965,7 @@ export interface NatsConfig {
     authenticator?: (nonce?: string) => { nkey?: string, sig: string, jwt?: string, auth_token?: string, user?: string, pass?: string },
 
     //subject_fire_event
-    subjectAsEvent?:boolean
+    subjectAsEvent?: boolean
 }
 
 type NatsConnectCfg_Mult = NatsConfig & { servers?: Array<string | NatsAddress> };
@@ -922,7 +990,7 @@ export const NatsSerizalize_Buf: NatsSerizalize = Object.freeze({
     decode: (buf: Class_Buffer) => buf
 });
 
-const DefaultAddress: NatsAddress = {url: "nats://localhost:4222"};
+const DefaultAddress: NatsAddress = { url: "nats://localhost:4222" };
 const DefaultConfig: NatsConfig = {
     timeout: 3000,
     reconnect: true,
@@ -1006,7 +1074,7 @@ abstract class NatsConnection extends EventEmitter {
                 this._fn_close();
             } catch (e) {
             }
-            this.emit("close", {type: "close", code: 888, reason: reason});
+            this.emit("close", { type: "close", code: 888, reason: reason });
         }
     }
 
@@ -1045,12 +1113,12 @@ abstract class NatsConnection extends EventEmitter {
                     offset = 0;
                     //["msg", subject,sid,data,inbox]
                     // this.fire("msg", arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
-                    try{
+                    try {
                         this._on_msg(arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
-                    }catch (e){
+                    } catch (e) {
                         console.error(`process_nats:msg:${arr[1]}`, e);
                     }
-                } else if(buf[1]==BIG_1_HMSG){
+                } else if (buf[1] == BIG_1_HMSG) {
                     let line = buf.slice(0, idx), fromIdx = idx + 2;
                     let arr = line.toString().split(" "),
                         len: number = Number(arr[arr.length - 1]);
@@ -1061,17 +1129,17 @@ abstract class NatsConnection extends EventEmitter {
                     buf = buf.slice(buf.length >= endCloseIdx ? endCloseIdx : endIdx);
                     offset = 0;
                     // console.log("["+data.toString()+"]", arr[1], arr[2])
-                    try{
+                    try {
                         this._on_hmsg(arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
-                    }catch (e){
+                    } catch (e) {
                         console.error(`process_nats:msg:${arr[1]}`, e);
                     }
                 } else {
                     if (buf[2] == BIT_2_OK) {// +OK
                         // this.fire("ok");
-                        try{
+                        try {
                             this._on_ok();
-                        }catch (e){
+                        } catch (e) {
                             console.error(`process_nats:ok`, e);
                         }
                     } else if (buf[1] == BIT_1_PING) {//PING
@@ -1080,7 +1148,7 @@ abstract class NatsConnection extends EventEmitter {
                         this.fire("pong");
                     } else if (buf[2] == BIT_2_ERR) {// -ERR
                         let tmp = buf.slice(0, idx).toString().split(" ");
-                        this.fire("err", {type: tmp[0], reason: tmp[1]});
+                        this.fire("err", { type: tmp[0], reason: tmp[1] });
                     }
                     buf = buf.slice(idx + 2);
                     offset = 0;
@@ -1283,9 +1351,9 @@ class NatsWebsocket extends NatsConnection {
                 }
                 hc.setClientCert(crypto.loadCert(cfg.ssl.cert), crypto.loadPKey(cfg.ssl.key));
             }
-            sock = new ws.Socket(addr.url, {perMessageDeflate: false, httpClient: hc});
+            sock = new ws.Socket(addr.url, { perMessageDeflate: false, httpClient: hc });
         } else {
-            sock = new ws.Socket(addr.url, {perMessageDeflate: false});
+            sock = new ws.Socket(addr.url, { perMessageDeflate: false });
         }
         let svr_info: NatsServerInfo;
         let open_evt = new coroutine.Event();
@@ -1384,10 +1452,48 @@ class WaitTimeoutEvt<T> extends WaitEvt<T> {
         }
     }
 }
+class WaitTimeout2Evt<T> extends coroutine.Event {
+    public rsp: T[] = [];
+    public err: Error | string;
+
+    private t1: Class_Timer;
+    private t2: Class_Timer;
+
+    constructor(timeout_ttl: number, private timeout_wait_ttl: number) {
+        super();
+        this.t1 = setTimeout(() => {
+            this.fail(WaitTimeoutEvt.TimeOutErr);
+        }, timeout_ttl);
+    }
+    public suc(v: T) {
+        this.rsp.push(v);
+        if (this.rsp.length == 1) {
+            clearTimeout(this.t1);
+            this.t2 = setTimeout(() => {
+                clearTimeout(this.t2);
+                this.set();
+            }, this.timeout_wait_ttl)
+        }
+    }
+    public fail(e: Error | string) {
+        clearTimeout(this.t1);
+        this.err = e;
+        this.set();
+    }
+    public cbk() {
+        return (d, _, e) => {
+            if (e) {
+                this.fail(e);
+            } else {
+                this.suc(d);
+            }
+        }
+    }
+}
 
 function convertToAddress(uri: string) {
     let obj = parse(uri);
-    let itf: NatsAddress = {...DefaultAddress, url: String(uri)};
+    let itf: NatsAddress = { ...DefaultAddress, url: String(uri) };
     if (obj.query) {
         let query = queryString.parse(obj.query);
         if (query.first("user")) {

@@ -9,13 +9,13 @@ const net = require("net");
 const ws = require("ws");
 const ssl = require("ssl");
 const crypto = require("crypto");
+const queryString = require("querystring");
+const http = require("http");
 const Nuid_1 = require("./Nuid");
 const encoding_1 = require("encoding");
 const url_1 = require("url");
-const queryString = require("querystring");
 const events_1 = require("events");
 const io_1 = require("io");
-const http = require("http");
 exports.VERSION = "1.2.8";
 exports.LANG = "fibjs";
 /**
@@ -250,16 +250,81 @@ class Nats extends events.EventEmitter {
         });
     }
     /**
+     * 请求接口（非queue方式的，多个侦听回调收集模式）
+     * @param subject
+     * @param payload
+     */
+    requestCollectAsync(subject, payload, opts = { timeout: 3000, wait: 30 }) {
+        const timeoutTtl = opts.timeout || 3000;
+        const timeoutWait = opts.wait || 30;
+        return new Promise((resolve, reject) => {
+            let responses = this._responses, rsp_timer, rsp_arr = [], inbox, cbk = (rsp, _, err) => {
+                if (!rsp_timer) {
+                    clearTimeout(timer);
+                }
+                if (err) {
+                    responses.delete(inbox);
+                    reject(err);
+                }
+                else {
+                    rsp_arr.push(rsp);
+                    if (!rsp_timer) {
+                        rsp_timer = setTimeout(() => {
+                            responses.delete(inbox);
+                            resolve(rsp_arr);
+                        }, timeoutWait);
+                    }
+                }
+            }, timer = setTimeout(() => {
+                cbk(null, null, "nats_request_timeout:" + subject);
+            }, timeoutTtl);
+            try {
+                inbox = this._mainInbox_pre + (this._nextSid++).toString();
+                responses.set(inbox, cbk);
+                this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), false);
+            }
+            catch (e) {
+                cbk(null, null, e);
+            }
+        });
+    }
+    /**
+     * 同步-请求接口（非queue方式的，多个侦听回调收集模式）
+     * @param subject
+     * @param payload
+     */
+    requestCollect(subject, payload, opts = { timeout: 3000, wait: 30 }) {
+        let evt = new WaitTimeout2Evt(opts.timeout || 3000, opts.wait || 30), evt_cbk = evt.cbk(), inbox;
+        let responses = this._responses;
+        try {
+            inbox = this._mainInbox_pre + (this._nextSid++).toString();
+            responses.set(inbox, evt_cbk);
+            this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), false);
+            evt.wait();
+        }
+        catch (e) {
+            evt.fail(e);
+        }
+        responses.delete(inbox);
+        if (evt.err) {
+            if (evt.err === WaitTimeoutEvt.TimeOutErr) {
+                evt.err = new Error(`nats_request_timeout:${subject}`);
+            }
+            throw evt.err;
+        }
+        return evt.rsp;
+    }
+    /**
      * 请求接口
      * @param subject
      * @param payload
      */
     requestAsync(subject, payload, timeoutTtl = 3000) {
         return new Promise((resolve, reject) => {
-            let inbox, cbk = (rsp, _, err) => {
+            let responses = this._responses, inbox, cbk = (rsp, _, err) => {
                 clearTimeout(timer);
+                responses.delete(inbox);
                 if (err) {
-                    this._responses.delete(inbox);
                     reject(err);
                 }
                 else {
@@ -270,7 +335,7 @@ class Nats extends events.EventEmitter {
             }, timeoutTtl);
             try {
                 inbox = this._mainInbox_pre + (this._nextSid++).toString();
-                this._responses.set(inbox, cbk);
+                responses.set(inbox, cbk);
                 this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), false);
             }
             catch (e) {
@@ -285,17 +350,18 @@ class Nats extends events.EventEmitter {
      */
     request(subject, payload, timeoutTtl = 3000) {
         let evt = new WaitTimeoutEvt(timeoutTtl), evt_cbk = evt.cbk(), inbox;
+        let responses = this._responses;
         try {
             inbox = this._mainInbox_pre + (this._nextSid++).toString();
-            this._responses.set(inbox, evt_cbk);
+            responses.set(inbox, evt_cbk);
             this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), false);
             evt.wait();
         }
         catch (e) {
             evt.fail(e);
         }
+        responses.delete(inbox);
         if (evt.err) {
-            this._responses.delete(inbox);
             if (evt.err === WaitTimeoutEvt.TimeOutErr) {
                 evt.err = new Error(`nats_request_timeout:${subject}`);
             }
@@ -311,8 +377,8 @@ class Nats extends events.EventEmitter {
      * @param limit
      */
     queueSubscribe(subject, queue, callBack, limit) {
-        let [subInfo, subCommdBuf] = this._pre_sub_local_first(subject, callBack, limit, queue);
-        this._send(subCommdBuf, false);
+        let [subInfo, commandBuf] = this._pre_sub_local_first(subject, callBack, limit, queue);
+        this._send(commandBuf, false);
         return subInfo;
     }
     /**
@@ -323,8 +389,8 @@ class Nats extends events.EventEmitter {
      * @returns 订阅的编号
      */
     subscribe(subject, callBack, limit) {
-        let [subInfo, subCommdBuf] = this._pre_sub_local_first(subject, callBack, limit);
-        this._send(subCommdBuf, false);
+        let [subInfo, commandBuf] = this._pre_sub_local_first(subject, callBack, limit);
+        this._send(commandBuf, false);
         return subInfo;
     }
     _pre_sub_mainInbox() {
@@ -1055,7 +1121,7 @@ class NatsSocket extends NatsConnection {
     }
     static connect(addr, cfg) {
         let sock;
-        let url_obj = url_1.parse(addr.url), addr_str = url_obj.hostname + ":" + (parseInt(url_obj.port) || 4222), addr_timeout = cfg.timeout > 0 ? cfg.timeout : 0;
+        let url_obj = (0, url_1.parse)(addr.url), addr_str = url_obj.hostname + ":" + (parseInt(url_obj.port) || 4222), addr_timeout = cfg.timeout > 0 ? cfg.timeout : 0;
         let fn_close = () => {
             try {
                 sock.close();
@@ -1238,8 +1304,43 @@ class WaitTimeoutEvt extends WaitEvt {
     }
 }
 WaitTimeoutEvt.TimeOutErr = new Error("wait_time_out_err");
+class WaitTimeout2Evt extends coroutine.Event {
+    constructor(timeout_ttl, timeout_wait_ttl) {
+        super();
+        this.timeout_wait_ttl = timeout_wait_ttl;
+        this.rsp = [];
+        this.t1 = setTimeout(() => {
+            this.fail(WaitTimeoutEvt.TimeOutErr);
+        }, timeout_ttl);
+    }
+    suc(v) {
+        this.rsp.push(v);
+        if (this.rsp.length == 1) {
+            clearTimeout(this.t1);
+            this.t2 = setTimeout(() => {
+                clearTimeout(this.t2);
+                this.set();
+            }, this.timeout_wait_ttl);
+        }
+    }
+    fail(e) {
+        clearTimeout(this.t1);
+        this.err = e;
+        this.set();
+    }
+    cbk() {
+        return (d, _, e) => {
+            if (e) {
+                this.fail(e);
+            }
+            else {
+                this.suc(d);
+            }
+        };
+    }
+}
 function convertToAddress(uri) {
-    let obj = url_1.parse(uri);
+    let obj = (0, url_1.parse)(uri);
     let itf = { ...DefaultAddress, url: String(uri) };
     if (obj.query) {
         let query = queryString.parse(obj.query);

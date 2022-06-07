@@ -74,6 +74,24 @@ export declare class Nats extends events.EventEmitter {
      */
     pingAsync(): Promise<boolean>;
     /**
+     * 请求接口（非queue方式的，多个侦听回调收集模式）
+     * @param subject
+     * @param payload
+     */
+    requestCollectAsync(subject: string, payload: any, opts?: {
+        timeout?: number;
+        wait?: number;
+    }): Promise<any>;
+    /**
+     * 同步-请求接口（非queue方式的，多个侦听回调收集模式）
+     * @param subject
+     * @param payload
+     */
+    requestCollect(subject: string, payload: any, opts?: {
+        timeout?: number;
+        wait?: number;
+    }): any;
+    /**
      * 请求接口
      * @param subject
      * @param payload
