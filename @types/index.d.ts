@@ -23,6 +23,7 @@ export declare class Nats extends events.EventEmitter {
     private _mainInbox;
     private _mainInbox_pre;
     private _nextSid;
+    private _waitOks;
     constructor();
     /**
      * 开启快速检测-(isSubscribeSubject,countSubscribeSubject)
@@ -180,12 +181,21 @@ export declare class Nats extends events.EventEmitter {
         subject: string;
         payload?: any;
     }>, retryWhenReconnec?: boolean): void;
+    /**
+     * if you config "verbose:true", wait real "ok"
+     */
+    waitOkAsync(): Promise<unknown>;
+    /**
+     * if you config "verbose:true", wait real "ok"
+     */
+    waitOk(): boolean;
     protected _send(payload: any, retryWhenReconnect: boolean): void;
     protected _on_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string): void;
     protected _on_hmsg(subject: string, sid: string, payload: Class_Buffer): void;
     private _on_connect;
     private _on_err;
     protected _on_ok(): void;
+    private _reject_waitOks;
     private _on_lost;
     protected _on_pong(is_lost: boolean): void;
     protected encode(payload: any): Class_Buffer;

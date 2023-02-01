@@ -37,6 +37,7 @@ class Nats extends events.EventEmitter {
         this._bakIngNum = 0;
         //等待重連中后發送數據的個數
         this._waitToSendNum = 0;
+        this._waitOks = [];
         this._tops_x = { incr: this._subject_incr.bind(this), decr: this._subject_decr.bind(this) };
         this._subject_incr = this._subject_x;
         this._subject_decr = this._subject_x;
@@ -608,6 +609,7 @@ class Nats extends events.EventEmitter {
         b.forEach(f => {
             f(null, null, e);
         });
+        this._reject_waitOks("connect_on_close");
     }
     /**
      * 发布数据
@@ -641,6 +643,41 @@ class Nats extends events.EventEmitter {
             bufs.push(Buffer.from(`${S_PUB} ${e.subject} ${pb.length} ${S_EOL}`), pb, B_EOL);
         }
         this._send(Buffer.concat(bufs), retryWhenReconnec);
+    }
+    /**
+     * if you config "verbose:true", wait real "ok"
+     */
+    waitOkAsync() {
+        return new Promise((resolve, reject) => {
+            if (!this._connection) {
+                reject("client not connected");
+            }
+            else {
+                if (!this._cfg.verbose) {
+                    resolve(null);
+                }
+                else {
+                    this._waitOks.push([resolve, reject]);
+                }
+            }
+        });
+    }
+    /**
+     * if you config "verbose:true", wait real "ok"
+     */
+    waitOk() {
+        let lock = new coroutine.Semaphore(0), lerr;
+        this.waitOkAsync().then(() => {
+            lock.post();
+        }).catch(err => {
+            lock.post();
+            lerr = err;
+        });
+        lock.wait();
+        if (lerr) {
+            return false;
+        }
+        return true;
     }
     _send(payload, retryWhenReconnect) {
         try {
@@ -759,6 +796,29 @@ class Nats extends events.EventEmitter {
         console.error("nats_on_err", JSON.stringify(evt), JSON.stringify(this.address));
     }
     _on_ok() {
+        if (this._waitOks.length > 0) {
+            let fns = this._waitOks.shift();
+            try {
+                fns[0](null);
+            }
+            catch (err) {
+                console.error(`process_nats:waitok`, err);
+            }
+        }
+    }
+    _reject_waitOks(info) {
+        if (this._waitOks.length > 0) {
+            let tmps = this._waitOks.concat();
+            this._waitOks.length = 0;
+            tmps.forEach(fns => {
+                try {
+                    fns[1](info);
+                }
+                catch (err) {
+                    console.error(`process_nats:waitok-reject`, err);
+                }
+            });
+        }
     }
     _on_lost() {
         let last = this._connection;
@@ -1001,12 +1061,7 @@ class NatsConnection extends events_1.EventEmitter {
                 else {
                     if (buf[2] == BIT_2_OK) { // +OK
                         // this.fire("ok");
-                        try {
-                            this._on_ok();
-                        }
-                        catch (e) {
-                            console.error(`process_nats:ok`, e);
-                        }
+                        this._on_ok();
                     }
                     else if (buf[1] == BIT_1_PING) { //PING
                         this.send(B_PONG_EOL);
