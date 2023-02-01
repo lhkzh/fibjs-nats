@@ -15,7 +15,7 @@ import { parse } from "url";
 import { EventEmitter } from "events";
 import { BufferedStream } from "io";
 
-export const VERSION = "1.2.8";
+export const VERSION = "1.3.2";
 export const LANG = "fibjs";
 
 /**
@@ -336,7 +336,7 @@ export class Nats extends events.EventEmitter {
         }
         return evt.rsp;
     }
-    
+
     /**
      * 请求接口
      * @param subject
@@ -676,9 +676,9 @@ export class Nats extends events.EventEmitter {
      * @param list
      * @param retryWhenReconnec
      */
-    public publishMult(list:Array<{subject:string, payload?:any}>, retryWhenReconnec=false){
-        let bufs:Class_Buffer[] = [], pb:Class_Buffer;
-        for(var e of list){
+    public publishMult(list: Array<{ subject: string, payload?: any }>, retryWhenReconnec = false) {
+        let bufs: Class_Buffer[] = [], pb: Class_Buffer;
+        for (var e of list) {
             pb = this.encode(e.payload);
             bufs.push(Buffer.from(`${S_PUB} ${e.subject} ${pb.length} ${S_EOL}`), pb, B_EOL);
         }
@@ -1207,12 +1207,12 @@ abstract class NatsConnection extends EventEmitter {
 }
 
 class NatsSocket extends NatsConnection {
-    private _lock: Class_Lock;
-    private _reader: Class_Fiber;
+    // private _lock: Class_Lock;
+    protected _reader: Class_Fiber;
 
     constructor(private _sock: Class_Socket, _cfg: NatsConfig, _addr: NatsAddress, _info: NatsServerInfo) {
         super(_cfg, _addr, _info);
-        this._lock = new coroutine.Lock();
+        // this._lock = new coroutine.Lock();
         this._state = 1;
         this._reader = coroutine.start(() => {
             let is_fail = (s: Class_Buffer | string) => s === null, tmp: Class_Buffer;
@@ -1236,11 +1236,11 @@ class NatsSocket extends NatsConnection {
     public send(payload: Class_Buffer) {
         // global["log"]("<--("+payload.toString()+")\n");
         try {
-            this._lock.acquire();
+            // this._lock.acquire();
             this._sock.write(payload);
-            this._lock.release();
+            // this._lock.release();
         } catch (e) {
-            this._lock.release();
+            // this._lock.release();
             this._on_lost(e.message);
             throw e;
         }
@@ -1286,12 +1286,12 @@ class NatsSocket extends NatsConnection {
             sock.timeout = -1;
             let stream = new BufferedStream(sock);
             stream.EOL = S_EOL;
-            let infoStr = stream.readLine(512);
+            let infoStr = stream.readLine();
             if (infoStr == null) {
                 fn_close();
                 throw new Error("closed_while_reading_info");
             }
-            info = JSON.parse(infoStr.toString().split(" ")[1]);
+            info = JSON.parse(infoStr.toString().substring(5));
             if (info.tls_required) {
                 sock = this.wrapSsl(sock, cfg);
                 stream = new BufferedStream(sock);

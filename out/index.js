@@ -16,7 +16,7 @@ const encoding_1 = require("encoding");
 const url_1 = require("url");
 const events_1 = require("events");
 const io_1 = require("io");
-exports.VERSION = "1.2.8";
+exports.VERSION = "1.3.2";
 exports.LANG = "fibjs";
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
@@ -1070,7 +1070,7 @@ class NatsSocket extends NatsConnection {
     constructor(_sock, _cfg, _addr, _info) {
         super(_cfg, _addr, _info);
         this._sock = _sock;
-        this._lock = new coroutine.Lock();
+        // this._lock = new coroutine.Lock();
         this._state = 1;
         this._reader = coroutine.start(() => {
             let is_fail = (s) => s === null, tmp;
@@ -1095,12 +1095,12 @@ class NatsSocket extends NatsConnection {
     send(payload) {
         // global["log"]("<--("+payload.toString()+")\n");
         try {
-            this._lock.acquire();
+            // this._lock.acquire();
             this._sock.write(payload);
-            this._lock.release();
+            // this._lock.release();
         }
         catch (e) {
-            this._lock.release();
+            // this._lock.release();
             this._on_lost(e.message);
             throw e;
         }
@@ -1144,12 +1144,12 @@ class NatsSocket extends NatsConnection {
             sock.timeout = -1;
             let stream = new io_1.BufferedStream(sock);
             stream.EOL = S_EOL;
-            let infoStr = stream.readLine(512);
+            let infoStr = stream.readLine();
             if (infoStr == null) {
                 fn_close();
                 throw new Error("closed_while_reading_info");
             }
-            info = JSON.parse(infoStr.toString().split(" ")[1]);
+            info = JSON.parse(infoStr.toString().substring(5));
             if (info.tls_required) {
                 sock = this.wrapSsl(sock, cfg);
                 stream = new io_1.BufferedStream(sock);

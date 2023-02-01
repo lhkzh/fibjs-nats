@@ -1,6 +1,6 @@
 /// <reference types="@fibjs/types" />
 import * as events from "events";
-export declare const VERSION = "1.2.8";
+export declare const VERSION = "1.3.2";
 export declare const LANG = "fibjs";
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
@@ -201,12 +201,12 @@ export declare class NatsEvent {
     static OnReconnectSuc: string;
     static OnReconnectFail: string;
 }
-declare type SubFn = (data: any, meta?: {
+type SubFn = (data: any, meta?: {
     subject: string;
     sid: string;
     reply?: (replyData: any) => void;
 }) => void;
-export declare type NatsSub = {
+export type NatsSub = {
     subject: string;
     sid: string;
     fn: SubFn;
@@ -275,14 +275,14 @@ export interface NatsConfig {
     };
     subjectAsEvent?: boolean;
 }
-declare type NatsConnectCfg_Mult = NatsConfig & {
+type NatsConnectCfg_Mult = NatsConfig & {
     servers?: Array<string | NatsAddress>;
 };
-declare type NatsConnectCfg_One = NatsConfig & {
+type NatsConnectCfg_One = NatsConfig & {
     url?: string | NatsAddress;
 };
-declare type NatsConnectCfg = NatsConnectCfg_Mult | NatsConnectCfg_One;
-export declare type NatsSerizalize = {
+type NatsConnectCfg = NatsConnectCfg_Mult | NatsConnectCfg_One;
+export type NatsSerizalize = {
     encode: (payload: any) => Class_Buffer;
     decode: (buf: Class_Buffer) => any;
 };
