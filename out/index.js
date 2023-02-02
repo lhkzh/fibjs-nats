@@ -614,12 +614,12 @@ class Nats extends events.EventEmitter {
      * @param subject 主题
      * @param payload 数据
      */
-    publish(subject, payload) {
+    publish(subject, payload, retryWhenReconnect) {
         // let pb: Class_Buffer = this.encode(payload);this._send(Buffer.concat([B_PUB, Buffer.from(subject), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), true);
-        this._send(this._pub_blob_1(subject, this.encode(payload)), true);
+        this._send(this._pub_blob_1(subject, this.encode(payload)), retryWhenReconnect);
     }
-    publishInbox(subject, inbox, payload) {
-        this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), true);
+    publishInbox(subject, inbox, payload, retryWhenReconnect) {
+        this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), retryWhenReconnect);
     }
     _pub_blob_1(subject, pb) {
         // this._send(Buffer.concat([B_PUB, Buffer.from(subject), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), true);
@@ -719,7 +719,7 @@ class Nats extends events.EventEmitter {
                 };
                 if (inbox) {
                     meta.reply = (replyData) => {
-                        this.publish(inbox, replyData);
+                        this.publish(inbox, replyData, true);
                     };
                 }
                 if (sop.num > 0) {
@@ -733,7 +733,7 @@ class Nats extends events.EventEmitter {
                 }
             }
             else if (inbox) { //队列选了当前执行节点，但是当前节点给取消订阅了
-                this.publishInbox(subject, inbox, payload);
+                this.publishInbox(subject, inbox, payload, true);
             }
         }
         catch (e) {

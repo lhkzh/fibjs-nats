@@ -167,8 +167,8 @@ export declare class Nats extends events.EventEmitter {
      * @param subject 主题
      * @param payload 数据
      */
-    publish(subject: string, payload?: any): void;
-    publishInbox(subject: string, inbox: string, payload: any): void;
+    publish(subject: string, payload?: any, retryWhenReconnect?: boolean): void;
+    publishInbox(subject: string, inbox: string, payload: any, retryWhenReconnect?: boolean): void;
     private _pub_blob_1;
     private _pub_blob_2;
     /**
