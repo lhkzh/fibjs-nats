@@ -126,7 +126,6 @@ export declare class Nats extends events.EventEmitter {
     private _unsubscribe_fast_mult;
     private _subject_incr;
     private _subject_decr;
-    private _subject_x;
     /**
      * 取消订阅
      * @param sub 订阅编号
