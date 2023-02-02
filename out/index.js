@@ -38,9 +38,8 @@ class Nats extends events.EventEmitter {
         //等待重連中后發送數據的個數
         this._waitToSendNum = 0;
         this._waitOks = [];
-        this._tops_x = { incr: this._subject_incr.bind(this), decr: this._subject_decr.bind(this), size: 0 };
-        this._subject_incr = (subject) => { this._tops_x.size++; };
-        this._subject_decr = (subject) => { this._tops_x.size--; };
+        this._tops_x = { incr: this._subject_incr.bind(this), decr: this._subject_decr.bind(this) };
+        this._subject_incr = this._subject_decr = (subject) => { };
         this._nextSid = 1n;
         this._mainInbox_pre = S_INBOX + Nuid_1.nuid.next() + ".";
         this._mainInbox = this._mainInbox_pre + "*";
@@ -74,8 +73,8 @@ class Nats extends events.EventEmitter {
             ok: this._connection != null,
             repair: this._reConnetIng != null,
             pingIngNum: this._pingBacks.length,
-            subNum: this._subs.size,
-            topicNum: this._tops ? this._tops.size : Number(this._tops_x.size + ".3"),
+            subNum: Math.max(0, this._subs.size - 1),
+            topicNum: this._tops ? this._tops.size : Math.max(0, this._subs.size - 1),
             bakNum: this._bakIngNum,
             waitToSendNum: this._waitToSendNum
         };

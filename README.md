@@ -6,6 +6,7 @@ nats-client 针对fibjs的nats客户端实现
  * sub/unsub当前实现先处理本地后send未确认ok    
  * bug->https://github.com/lhkzh/fibjs-nats   
  * fibjs->https://fibjs.org    
+ * nats->https://nats.io  
  使用  
 <pre>
 <code>

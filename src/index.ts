@@ -39,7 +39,7 @@ export class Nats extends events.EventEmitter {
     // private _okWaits: Array<Class_Event> = [];
     //订阅的主题-订阅数量
     private _tops: Map<string, number>;
-    private _tops_x: { incr: (subject: string) => void, decr: (subject: string) => void, size: number };
+    private _tops_x: { incr: (subject: string) => void, decr: (subject: string) => void };
     //执行回调中的数量
     private _bakIngNum: number = 0;
 
@@ -54,9 +54,8 @@ export class Nats extends events.EventEmitter {
 
     constructor() {
         super();
-        this._tops_x = { incr: this._subject_incr.bind(this), decr: this._subject_decr.bind(this), size: 0 };
-        this._subject_incr = (subject) => { this._tops_x.size++; };
-        this._subject_decr = (subject) => { this._tops_x.size--; };
+        this._tops_x = { incr: this._subject_incr.bind(this), decr: this._subject_decr.bind(this) };
+        this._subject_incr = this._subject_decr = (subject) => { };
         this._nextSid = 1n;
         this._mainInbox_pre = S_INBOX + nuid.next() + ".";
         this._mainInbox = this._mainInbox_pre + "*";
@@ -94,8 +93,8 @@ export class Nats extends events.EventEmitter {
             ok: this._connection != null,
             repair: this._reConnetIng != null,
             pingIngNum: this._pingBacks.length,
-            subNum: this._subs.size,
-            topicNum: this._tops ? this._tops.size : Number(this._tops_x.size + ".3"),
+            subNum: Math.max(0, this._subs.size - 1),
+            topicNum: this._tops ? this._tops.size : Math.max(0, this._subs.size - 1),
             bakNum: this._bakIngNum,
             waitToSendNum: this._waitToSendNum
         };
