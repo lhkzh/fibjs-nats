@@ -15,7 +15,7 @@ import { parse } from "url";
 import { EventEmitter } from "events";
 import { BufferedStream } from "io";
 
-export const VERSION = "1.3.2";
+export const VERSION = "1.4.0";
 export const LANG = "fibjs";
 
 /**
@@ -256,11 +256,11 @@ export class Nats extends events.EventEmitter {
                     cbks.splice(idx, 1);
                 }
             }
-            evt.rsp = false;
+            evt.data = false;
             evt.fail(e);
         }
         evt.wait();
-        return evt.rsp;
+        return evt.data;
     }
 
     /**
@@ -274,10 +274,8 @@ export class Nats extends events.EventEmitter {
 
     /**
      * 请求接口（非queue方式的，多个侦听回调收集模式）
-     * @param subject
-     * @param payload
      */
-    public requestCollectAsync(subject: string, payload: any, opts: { timeout?: number, wait?: number } = { timeout: 3000, wait: 30 }): Promise<any> {
+    public requestCollectAsync(subject: string, payload: any, headers: { [index: string]: string | Array<string> } = null, opts: { timeout?: number, wait?: number } = { timeout: 3000, wait: 30 }): Promise<any> {
         const timeoutTtl = opts.timeout || 3000;
         const timeoutWait = opts.wait || 30;
         return new Promise<any>((resolve, reject) => {
@@ -306,7 +304,7 @@ export class Nats extends events.EventEmitter {
             try {
                 inbox = this._mainInbox_pre + (this._nextSid++).toString();
                 responses.set(inbox, cbk);
-                this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), false);
+                this._send(this._pub_blob_2h(subject, inbox, headers, this.encode(payload)), false);
             } catch (e) {
                 cbk(null, null, e);
             }
@@ -314,16 +312,14 @@ export class Nats extends events.EventEmitter {
     }
     /**
      * 同步-请求接口（非queue方式的，多个侦听回调收集模式）
-     * @param subject
-     * @param payload
      */
-    public requestCollect(subject: string, payload: any, opts: { timeout?: number, wait?: number } = { timeout: 3000, wait: 30 }): any {
+    public requestCollect(subject: string, payload: any, headers: { [index: string]: string | Array<string> } = null, opts: { timeout?: number, wait?: number } = { timeout: 3000, wait: 30 }): any {
         let evt = new WaitTimeout2Evt<any>(opts.timeout || 3000, opts.wait || 30), evt_cbk = evt.cbk(), inbox: string;
         let responses = this._responses;
         try {
             inbox = this._mainInbox_pre + (this._nextSid++).toString();
             responses.set(inbox, evt_cbk);
-            this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), false);
+            this._send(this._pub_blob_2h(subject, inbox, headers, this.encode(payload)), false);
             evt.wait();
         } catch (e) {
             evt.fail(e);
@@ -335,15 +331,13 @@ export class Nats extends events.EventEmitter {
             }
             throw evt.err;
         }
-        return evt.rsp;
+        return evt.data;
     }
 
     /**
      * 请求接口
-     * @param subject
-     * @param payload
      */
-    public requestAsync(subject: string, payload: any, timeoutTtl: number = 3000): Promise<any> {
+    public requestAsync(subject: string, payload: any, headers: { [index: string]: string | Array<string> } = null, timeoutTtl: number = 3000): Promise<any> {
         return new Promise<any>((resolve, reject) => {
             let responses = this._responses,
                 inbox: string,
@@ -362,7 +356,7 @@ export class Nats extends events.EventEmitter {
             try {
                 inbox = this._mainInbox_pre + (this._nextSid++).toString();
                 responses.set(inbox, cbk);
-                this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), false);
+                this._send(this._pub_blob_2h(subject, inbox, headers, this.encode(payload)), false);
             } catch (e) {
                 cbk(null, null, e);
             }
@@ -374,13 +368,13 @@ export class Nats extends events.EventEmitter {
      * @param subject
      * @param payload
      */
-    public request(subject: string, payload: any, timeoutTtl: number = 3000): any {
+    public request(subject: string, payload: any, headers: { [index: string]: string | Array<string> } = null, timeoutTtl: number = 3000): any {
         let evt = new WaitTimeoutEvt<any>(timeoutTtl), evt_cbk = evt.cbk(), inbox: string;
         let responses = this._responses;
         try {
             inbox = this._mainInbox_pre + (this._nextSid++).toString();
             responses.set(inbox, evt_cbk);
-            this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), false);
+            this._send(this._pub_blob_2h(subject, inbox, headers, this.encode(payload)), false);
             evt.wait();
         } catch (e) {
             evt.fail(e);
@@ -392,7 +386,7 @@ export class Nats extends events.EventEmitter {
             }
             throw evt.err;
         }
-        return evt.rsp;
+        return evt.data;
     }
 
     /**
@@ -649,26 +643,33 @@ export class Nats extends events.EventEmitter {
      * 发布数据
      * @param subject 主题
      * @param payload 数据
+     * @param headers 消息头
      */
-    public publish(subject: string, payload?: any, retryWhenReconnect?: boolean) {
+    public publish(subject: string, payload?: any, headers?: { [index: string]: string | Array<string> }, retryWhenReconnect?: boolean) {
         // let pb: Class_Buffer = this.encode(payload);this._send(Buffer.concat([B_PUB, Buffer.from(subject), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), true);
-        this._send(this._pub_blob_1(subject, this.encode(payload)), retryWhenReconnect);
+        this._send(this._pub_blob_1h(subject, headers, this.encode(payload)), retryWhenReconnect);
     }
 
-    public publishInbox(subject: string, inbox: string, payload: any, retryWhenReconnect?: boolean) {
-        this._send(this._pub_blob_2(subject, inbox, this.encode(payload)), retryWhenReconnect);
+    public publishInbox(subject: string, inbox: string, payload: any, headers?: { [index: string]: string | Array<string> }, retryWhenReconnect?: boolean) {
+        this._send(this._pub_blob_2h(subject, inbox, headers, this.encode(payload)), retryWhenReconnect);
     }
 
-    private _pub_blob_1(subject: string, pb: Class_Buffer) {
-        // this._send(Buffer.concat([B_PUB, Buffer.from(subject), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), true);
-        return Buffer.concat([Buffer.from(`${S_PUB} ${subject} ${pb.length} ${S_EOL}`), pb, B_EOL]);
+    private _pub_blob_1h(subject: string, headers: { [index: string]: string | Array<string> }, pb: Class_Buffer) {
+        if (util.isEmpty(headers)) {
+            // this._send(Buffer.concat([B_PUB, Buffer.from(subject), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), true);
+            return Buffer.concat([Buffer.from(`${S_PUB} ${subject} ${pb.length} ${S_EOL}`), pb, B_EOL]);
+        }
+        let hb = headers_encode(headers);
+        return Buffer.concat([Buffer.from(`${S_HPUB} ${subject} ${hb.length} ${pb.length + hb.length} ${S_EOL}`), hb, pb, B_EOL]);
     }
-
-    private _pub_blob_2(subject: string, inbox: string, pb: Class_Buffer) {
-        // return Buffer.concat([B_PUB, Buffer.from(subject), B_SPACE, Buffer.from(inbox), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]);
-        return Buffer.concat([Buffer.from(`${S_PUB} ${subject} ${inbox} ${pb.length} ${S_EOL}`), pb, B_EOL]);
+    private _pub_blob_2h(subject: string, inbox: string, headers: { [index: string]: string | Array<string> }, pb: Class_Buffer) {
+        if (util.isEmpty(headers)) {
+            // return Buffer.concat([B_PUB, Buffer.from(subject), B_SPACE, Buffer.from(inbox), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]);
+            return Buffer.concat([Buffer.from(`${S_PUB} ${subject} ${inbox} ${pb.length} ${S_EOL}`), pb, B_EOL]);
+        }
+        let hb = headers_encode(headers);
+        return Buffer.concat([Buffer.from(`${S_HPUB} ${subject} ${inbox} ${hb.length} ${pb.length + hb.length} ${S_EOL}`), hb, pb, B_EOL]);
     }
-
     /**
      * 多条合批发布
      * @param list
@@ -744,20 +745,33 @@ export class Nats extends events.EventEmitter {
             }
         }
     }
-
-    protected _on_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string) {
+    protected _on_herr(subject: string, sid: string, err: string) {
+        let sop = this._subs.get(sid);
+        try {
+            this._bakIngNum++;
+            if (sop) {
+                (<any>sop.fn)(null, { subject: subject }, new Error(err));
+            }
+        } catch (e) {
+            console.error("nats|on_hmsg", e);
+        } finally {
+            this._bakIngNum--;
+        }
+    }
+    protected _on_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string, headers: any) {
         let sop = this._subs.get(sid);
         try {
             this._bakIngNum++;
             let data = payload.length > 0 ? this.decode(payload) : null;
             if (sop) {
-                let meta: { subject: string, sid: string, reply?: (replyData: any) => void } = {
+                let meta: { subject: string, sid: string, headers: any, reply?: (replyData: any, replyHeaders?: any) => void } = {
                     subject: subject,
-                    sid: sid
+                    sid: sid,
+                    headers: headers
                 };
                 if (inbox) {
-                    meta.reply = (replyData) => {
-                        this.publish(inbox, replyData, true);
+                    meta.reply = (replyData, replyHeaders?: any) => {
+                        this.publish(inbox, replyData, replyHeaders, true);
                     };
                 }
                 if (sop.num > 0) {
@@ -770,24 +784,10 @@ export class Nats extends events.EventEmitter {
                     this.emit(subject, data);
                 }
             } else if (inbox) {//队列选了当前执行节点，但是当前节点给取消订阅了
-                this.publishInbox(subject, inbox, payload, true);
+                this.publishInbox(subject, inbox, payload, headers, true);
             }
         } catch (e) {
             console.error("nats|on_msg", e);
-        } finally {
-            this._bakIngNum--;
-        }
-    }
-
-    protected _on_hmsg(subject: string, sid: string, payload: Class_Buffer) {
-        let sop = this._subs.get(sid);
-        try {
-            this._bakIngNum++;
-            if (sop) {
-                (<any>sop.fn)(null, { subject: subject }, new Error(payload.toString()));
-            }
-        } catch (e) {
-            console.error("nats|on_hmsg", e);
         } finally {
             this._bakIngNum--;
         }
@@ -803,7 +803,7 @@ export class Nats extends events.EventEmitter {
         // connection.on("hmsg", this._on_hmsg.bind(this));
         connection._on_ok = this._on_ok.bind(this);
         connection._on_msg = this._on_msg.bind(this);
-        connection._on_hmsg = this._on_hmsg.bind(this);
+        connection._on_herr = this._on_herr.bind(this);
         let tmpArr = [`SUB ${this._mainInbox} ${this._pre_sub_mainInbox()}${S_EOL}`];
         for (let e of this._subs.values()) {
             if (e.queue) {
@@ -950,7 +950,7 @@ export class NatsEvent {
 }
 
 //侦听器-回调
-type SubFn = (data: any, meta?: { subject: string, sid: string, reply?: (replyData: any) => void }) => void;
+type SubFn = (data: any, meta?: { subject: string, sid: string, reply?: (replyData: any) => void, headers: { [index: string]: string | Array<string> } }) => void;
 //侦听器-结构描述
 export type NatsSub = { subject: string, sid: string, fn: SubFn, num?: number, queue?: string, cancel: () => void };
 
@@ -1073,7 +1073,7 @@ abstract class NatsConnection extends EventEmitter {
     public verbose: boolean;
 
     public _on_msg: Function;
-    public _on_hmsg: Function;
+    public _on_herr: Function;
     public _on_ok: Function;
 
     constructor(protected _cfg: NatsConfig, protected _addr: NatsAddress, protected _info: NatsServerInfo) {
@@ -1182,16 +1182,24 @@ abstract class NatsConnection extends EventEmitter {
                 } else if (buf[1] == BIG_1_HMSG) {
                     let line = buf.slice(0, idx), fromIdx = idx + 2;
                     let arr = line.toString().split(" "),
+                        hlen = Number(arr[arr.length - 2]),
                         len: number = Number(arr[arr.length - 1]);
                     if (buf.length < (fromIdx + len)) {
                         break;
                     }
-                    let endIdx = fromIdx + len, endCloseIdx = endIdx + 2, data = buf.slice(fromIdx, endIdx);
+                    let endIdx = fromIdx + len, endCloseIdx = endIdx + 2;
+                    let hdata = headers_decode(buf.slice(fromIdx, fromIdx + hlen));
+                    fromIdx += hlen;
+                    let data = buf.slice(fromIdx, endIdx);
                     buf = buf.slice(buf.length >= endCloseIdx ? endCloseIdx : endIdx);
                     offset = 0;
                     // console.log("["+data.toString()+"]", arr[1], arr[2])
                     try {
-                        this._on_hmsg(arr[1], arr[2], data, arr.length > 4 ? arr[3] : null);
+                        if (hdata[H_ERR_KEY]) {
+                            this._on_herr(arr[1], arr[2], hdata[H_ERR_KEY]);
+                        } else {
+                            this._on_msg(arr[1], arr[2], data, arr.length > 5 ? arr[3] : null, hdata);
+                        }
                     } catch (e) {
                         console.error(`process_nats:msg:${arr[1]}`, e);
                     }
@@ -1469,11 +1477,11 @@ class NatsWebsocket extends NatsConnection {
 }
 
 class WaitEvt<T> extends coroutine.Event {
-    public rsp: T;
+    public data: T;
     public err: Error | string;
 
     public suc(v: T) {
-        this.rsp = v;
+        this.data = v;
         this.set();
     }
 
@@ -1486,6 +1494,7 @@ class WaitEvt<T> extends coroutine.Event {
 class WaitTimeoutEvt<T> extends WaitEvt<T> {
     public static TimeOutErr: Error = new Error("wait_time_out_err");
     private t: Class_Timer;
+    public headers: any;
 
     constructor(timeout_ttl: number) {
         super();
@@ -1504,13 +1513,14 @@ class WaitTimeoutEvt<T> extends WaitEvt<T> {
             if (e) {
                 this.fail(e);
             } else {
+                this.headers = _.headers;
                 this.suc(d);
             }
         }
     }
 }
 class WaitTimeout2Evt<T> extends coroutine.Event {
-    public rsp: T[] = [];
+    public data: T[] = [];
     public err: Error | string;
 
     private t1: Class_Timer;
@@ -1523,8 +1533,8 @@ class WaitTimeout2Evt<T> extends coroutine.Event {
         }, timeout_ttl);
     }
     public suc(v: T) {
-        this.rsp.push(v);
-        if (this.rsp.length == 1) {
+        this.data.push(v);
+        if (this.data.length == 1) {
             clearTimeout(this.t1);
             this.t2 = setTimeout(() => {
                 clearTimeout(this.t2);
@@ -1582,6 +1592,47 @@ function convertToAddress(uri: string) {
     return itf;
 }
 
+function headers_encode(h: { [index: string]: string | Array<string> }) {
+    var arr = [];
+    for (var [k, v] of Object.entries(h)) {
+        if (Array.isArray(v)) {
+            if (v.length > 0) {
+                for (var v2 of v) {
+                    arr.push(`${k}:${v2}`);
+                }
+            }
+        } else {
+            arr.push(`${k}:${v}`);
+        }
+    }
+    return Buffer.from(`NATS/1.0${S_EOL}${arr.join(S_EOL)}${S_EOL}${S_EOL}`);
+}
+function headers_decode(b: Class_Buffer) {
+    var rsp: any = {}, tmps = b.toString().split(S_EOL);
+    if (tmps.length < 1) return rsp;
+    if (tmps[0].indexOf(' ') > 1) {
+        rsp[H_ERR_KEY] = tmps[0];
+    } else {
+        for (var i = 1; i < tmps.length - 2; i++) {
+            if (tmps[i].length > 0) {
+                var kv = tmps[i].split(":"),
+                    last = rsp[kv[0]];
+                if (last === undefined) {
+                    rsp[kv[0]] = kv[1];
+                } else if (Array.isArray(last)) {
+                    last.push(kv[1]);
+                } else {
+                    rsp[kv[0]] = [last, kv[1]];
+                }
+            }
+        }
+    }
+    return rsp;
+}
+const H_ERR_KEY = Symbol("ERR");
+
+const B_EMPTY = Buffer.from("");
+
 // const B_SPACE = Buffer.from(" ");
 const B_EOL = Buffer.from("\r\n");
 // const B_PUB = Buffer.from("PUB ");
@@ -1589,6 +1640,7 @@ const B_PING_EOL = Buffer.from("PING\r\n");
 const B_PONG_EOL = Buffer.from("PONG\r\n");
 const S_EOL = "\r\n";
 const S_PUB = "PUB";
+const S_HPUB = "HPUB";
 const S_INBOX = "_INBOX.";
 
 const BIT_2_ERR: number = Buffer.from("-ERR")[2];

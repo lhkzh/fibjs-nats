@@ -1,6 +1,6 @@
 /// <reference types="@fibjs/types" />
 import * as events from "events";
-export declare const VERSION = "1.3.2";
+export declare const VERSION = "1.4.0";
 export declare const LANG = "fibjs";
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
@@ -76,34 +76,36 @@ export declare class Nats extends events.EventEmitter {
     pingAsync(): Promise<boolean>;
     /**
      * 请求接口（非queue方式的，多个侦听回调收集模式）
-     * @param subject
-     * @param payload
      */
-    requestCollectAsync(subject: string, payload: any, opts?: {
+    requestCollectAsync(subject: string, payload: any, headers?: {
+        [index: string]: string | Array<string>;
+    }, opts?: {
         timeout?: number;
         wait?: number;
     }): Promise<any>;
     /**
      * 同步-请求接口（非queue方式的，多个侦听回调收集模式）
-     * @param subject
-     * @param payload
      */
-    requestCollect(subject: string, payload: any, opts?: {
+    requestCollect(subject: string, payload: any, headers?: {
+        [index: string]: string | Array<string>;
+    }, opts?: {
         timeout?: number;
         wait?: number;
     }): any;
     /**
      * 请求接口
-     * @param subject
-     * @param payload
      */
-    requestAsync(subject: string, payload: any, timeoutTtl?: number): Promise<any>;
+    requestAsync(subject: string, payload: any, headers?: {
+        [index: string]: string | Array<string>;
+    }, timeoutTtl?: number): Promise<any>;
     /**
      * 同步-请求接口
      * @param subject
      * @param payload
      */
-    request(subject: string, payload: any, timeoutTtl?: number): any;
+    request(subject: string, payload: any, headers?: {
+        [index: string]: string | Array<string>;
+    }, timeoutTtl?: number): any;
     /**
      * 抢占式(queue)侦听主题
      * @param subject
@@ -166,11 +168,16 @@ export declare class Nats extends events.EventEmitter {
      * 发布数据
      * @param subject 主题
      * @param payload 数据
+     * @param headers 消息头
      */
-    publish(subject: string, payload?: any, retryWhenReconnect?: boolean): void;
-    publishInbox(subject: string, inbox: string, payload: any, retryWhenReconnect?: boolean): void;
-    private _pub_blob_1;
-    private _pub_blob_2;
+    publish(subject: string, payload?: any, headers?: {
+        [index: string]: string | Array<string>;
+    }, retryWhenReconnect?: boolean): void;
+    publishInbox(subject: string, inbox: string, payload: any, headers?: {
+        [index: string]: string | Array<string>;
+    }, retryWhenReconnect?: boolean): void;
+    private _pub_blob_1h;
+    private _pub_blob_2h;
     /**
      * 多条合批发布
      * @param list
@@ -189,8 +196,8 @@ export declare class Nats extends events.EventEmitter {
      */
     waitOk(): boolean;
     protected _send(payload: any, retryWhenReconnect: boolean): void;
-    protected _on_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string): void;
-    protected _on_hmsg(subject: string, sid: string, payload: Class_Buffer): void;
+    protected _on_herr(subject: string, sid: string, err: string): void;
+    protected _on_msg(subject: string, sid: string, payload: Class_Buffer, inbox: string, headers: any): void;
     private _on_connect;
     private _on_err;
     protected _on_ok(): void;
@@ -214,6 +221,9 @@ type SubFn = (data: any, meta?: {
     subject: string;
     sid: string;
     reply?: (replyData: any) => void;
+    headers: {
+        [index: string]: string | Array<string>;
+    };
 }) => void;
 export type NatsSub = {
     subject: string;
