@@ -1,7 +1,6 @@
 /// <reference types="@fibjs/types" />
 
 import * as coroutine from "coroutine";
-import * as util from "util";
 import * as events from "events";
 import * as net from "net";
 import * as ws from "ws";
@@ -15,7 +14,7 @@ import { parse } from "url";
 import { EventEmitter } from "events";
 import { BufferedStream } from "io";
 
-export const VERSION = "1.4.0";
+export const VERSION = "1.4.1";
 export const LANG = "fibjs";
 
 /**
@@ -118,7 +117,7 @@ export class Nats extends events.EventEmitter {
 
     //添加服务地址
     public addServer(addr: string | NatsAddress) {
-        let natAddr = util.isString(addr) ? convertToAddress(<string>addr) : <NatsAddress>addr;
+        let natAddr = typeof (addr) == "string" ? convertToAddress(<string>addr) : <NatsAddress>addr;
         let jsonAddr = JSON.stringify(natAddr);
         let had = this._serverList.some(e => {
             return JSON.stringify(e) == jsonAddr;
@@ -132,7 +131,7 @@ export class Nats extends events.EventEmitter {
 
     //移除一个节点服务
     public removeServer(addr: string | NatsAddress) {
-        let natAddr = util.isString(addr) ? convertToAddress(<string>addr) : <NatsAddress>addr;
+        let natAddr = typeof (addr) == "string" ? convertToAddress(<string>addr) : <NatsAddress>addr;
         this._serverList = this._serverList.filter(e => e.url != natAddr.url);
         if (this._connection && this._connection.address.url == natAddr.url) {
             this._close();
@@ -338,7 +337,10 @@ export class Nats extends events.EventEmitter {
      * 请求接口
      */
     public requestAsync(subject: string, payload: any, headers: { [index: string]: string | Array<string> } = null, timeoutTtl: number = 3000): Promise<any> {
-        return new Promise<any>((resolve, reject) => {
+        return this.requestAsync2(subject, payload, headers, timeoutTtl).then(r => r.data);
+    }
+    public requestAsync2(subject: string, payload: any, headers: { [index: string]: string | Array<string> } = null, timeoutTtl: number = 3000) {
+        return new Promise<{ data: any, headers?: { [index: string]: string | Array<string> } }>((resolve, reject) => {
             let responses = this._responses,
                 inbox: string,
                 cbk = (rsp, _, err) => {
@@ -347,7 +349,7 @@ export class Nats extends events.EventEmitter {
                     if (err) {
                         reject(err);
                     } else {
-                        resolve(rsp);
+                        resolve({ data: rsp, headers: _.headers });
                     }
                 }, timer: Class_Timer = setTimeout(() => {
                     cbk(null, null, "nats_request_timeout:" + subject);
@@ -362,13 +364,13 @@ export class Nats extends events.EventEmitter {
             }
         });
     }
-
     /**
      * 同步-请求接口
-     * @param subject
-     * @param payload
      */
     public request(subject: string, payload: any, headers: { [index: string]: string | Array<string> } = null, timeoutTtl: number = 3000): any {
+        return this.request2(subject, payload, headers, timeoutTtl).data;
+    }
+    public request2(subject: string, payload: any, headers: { [index: string]: string | Array<string> } = null, timeoutTtl: number = 3000): { data: any, headers?: { [index: string]: string | Array<string> } } {
         let evt = new WaitTimeoutEvt<any>(timeoutTtl), evt_cbk = evt.cbk(), inbox: string;
         let responses = this._responses;
         try {
@@ -386,7 +388,7 @@ export class Nats extends events.EventEmitter {
             }
             throw evt.err;
         }
-        return evt.data;
+        return { data: evt.data, headers: evt.headers };
     }
 
     /**
@@ -655,7 +657,7 @@ export class Nats extends events.EventEmitter {
     }
 
     private _pub_blob_1h(subject: string, headers: { [index: string]: string | Array<string> }, pb: Class_Buffer) {
-        if (util.isEmpty(headers)) {
+        if (!headers || Object.keys(headers).length == 0) {
             // this._send(Buffer.concat([B_PUB, Buffer.from(subject), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), true);
             return Buffer.concat([Buffer.from(`${S_PUB} ${subject} ${pb.length} ${S_EOL}`), pb, B_EOL]);
         }
@@ -663,7 +665,7 @@ export class Nats extends events.EventEmitter {
         return Buffer.concat([Buffer.from(`${S_HPUB} ${subject} ${hb.length} ${pb.length + hb.length} ${S_EOL}`), hb, pb, B_EOL]);
     }
     private _pub_blob_2h(subject: string, inbox: string, headers: { [index: string]: string | Array<string> }, pb: Class_Buffer) {
-        if (util.isEmpty(headers)) {
+        if (!headers || Object.keys(headers).length == 0) {
             // return Buffer.concat([B_PUB, Buffer.from(subject), B_SPACE, Buffer.from(inbox), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]);
             return Buffer.concat([Buffer.from(`${S_PUB} ${subject} ${inbox} ${pb.length} ${S_EOL}`), pb, B_EOL]);
         }

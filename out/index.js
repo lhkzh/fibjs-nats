@@ -3,7 +3,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.NatsSerizalize_Buf = exports.NatsSerizalize_Str = exports.NatsSerizalize_Msgpack = exports.NatsSerizalize_Json = exports.NatsEvent = exports.Nats = exports.LANG = exports.VERSION = void 0;
 const coroutine = require("coroutine");
-const util = require("util");
 const events = require("events");
 const net = require("net");
 const ws = require("ws");
@@ -16,7 +15,7 @@ const encoding_1 = require("encoding");
 const url_1 = require("url");
 const events_1 = require("events");
 const io_1 = require("io");
-exports.VERSION = "1.4.0";
+exports.VERSION = "1.4.1";
 exports.LANG = "fibjs";
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
@@ -97,7 +96,7 @@ class Nats extends events.EventEmitter {
     }
     //添加服务地址
     addServer(addr) {
-        let natAddr = util.isString(addr) ? convertToAddress(addr) : addr;
+        let natAddr = typeof (addr) == "string" ? convertToAddress(addr) : addr;
         let jsonAddr = JSON.stringify(natAddr);
         let had = this._serverList.some(e => {
             return JSON.stringify(e) == jsonAddr;
@@ -110,7 +109,7 @@ class Nats extends events.EventEmitter {
     }
     //移除一个节点服务
     removeServer(addr) {
-        let natAddr = util.isString(addr) ? convertToAddress(addr) : addr;
+        let natAddr = typeof (addr) == "string" ? convertToAddress(addr) : addr;
         this._serverList = this._serverList.filter(e => e.url != natAddr.url);
         if (this._connection && this._connection.address.url == natAddr.url) {
             this._close();
@@ -314,6 +313,9 @@ class Nats extends events.EventEmitter {
      * 请求接口
      */
     requestAsync(subject, payload, headers = null, timeoutTtl = 3000) {
+        return this.requestAsync2(subject, payload, headers, timeoutTtl).then(r => r.data);
+    }
+    requestAsync2(subject, payload, headers = null, timeoutTtl = 3000) {
         return new Promise((resolve, reject) => {
             let responses = this._responses, inbox, cbk = (rsp, _, err) => {
                 clearTimeout(timer);
@@ -322,7 +324,7 @@ class Nats extends events.EventEmitter {
                     reject(err);
                 }
                 else {
-                    resolve(rsp);
+                    resolve({ data: rsp, headers: _.headers });
                 }
             }, timer = setTimeout(() => {
                 cbk(null, null, "nats_request_timeout:" + subject);
@@ -339,10 +341,11 @@ class Nats extends events.EventEmitter {
     }
     /**
      * 同步-请求接口
-     * @param subject
-     * @param payload
      */
     request(subject, payload, headers = null, timeoutTtl = 3000) {
+        return this.request2(subject, payload, headers, timeoutTtl).data;
+    }
+    request2(subject, payload, headers = null, timeoutTtl = 3000) {
         let evt = new WaitTimeoutEvt(timeoutTtl), evt_cbk = evt.cbk(), inbox;
         let responses = this._responses;
         try {
@@ -361,7 +364,7 @@ class Nats extends events.EventEmitter {
             }
             throw evt.err;
         }
-        return evt.data;
+        return { data: evt.data, headers: evt.headers };
     }
     /**
      * 抢占式(queue)侦听主题
@@ -616,7 +619,7 @@ class Nats extends events.EventEmitter {
         this._send(this._pub_blob_2h(subject, inbox, headers, this.encode(payload)), retryWhenReconnect);
     }
     _pub_blob_1h(subject, headers, pb) {
-        if (util.isEmpty(headers)) {
+        if (!headers || Object.keys(headers).length == 0) {
             // this._send(Buffer.concat([B_PUB, Buffer.from(subject), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]), true);
             return Buffer.concat([Buffer.from(`${S_PUB} ${subject} ${pb.length} ${S_EOL}`), pb, B_EOL]);
         }
@@ -624,7 +627,7 @@ class Nats extends events.EventEmitter {
         return Buffer.concat([Buffer.from(`${S_HPUB} ${subject} ${hb.length} ${pb.length + hb.length} ${S_EOL}`), hb, pb, B_EOL]);
     }
     _pub_blob_2h(subject, inbox, headers, pb) {
-        if (util.isEmpty(headers)) {
+        if (!headers || Object.keys(headers).length == 0) {
             // return Buffer.concat([B_PUB, Buffer.from(subject), B_SPACE, Buffer.from(inbox), Buffer.from(` ${pb.length}`), B_EOL, pb, B_EOL]);
             return Buffer.concat([Buffer.from(`${S_PUB} ${subject} ${inbox} ${pb.length} ${S_EOL}`), pb, B_EOL]);
         }

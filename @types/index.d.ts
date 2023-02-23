@@ -1,6 +1,6 @@
 /// <reference types="@fibjs/types" />
 import * as events from "events";
-export declare const VERSION = "1.4.0";
+export declare const VERSION = "1.4.1";
 export declare const LANG = "fibjs";
 /**
  * nats客户端实现。支持的地址实现（"nats://127.0.0.1:4222", "nats://user:pwd@127.0.0.1:4223", "nats://token@127.0.0.1:4234"）
@@ -98,14 +98,28 @@ export declare class Nats extends events.EventEmitter {
     requestAsync(subject: string, payload: any, headers?: {
         [index: string]: string | Array<string>;
     }, timeoutTtl?: number): Promise<any>;
+    requestAsync2(subject: string, payload: any, headers?: {
+        [index: string]: string | Array<string>;
+    }, timeoutTtl?: number): Promise<{
+        data: any;
+        headers?: {
+            [index: string]: string | string[];
+        };
+    }>;
     /**
      * 同步-请求接口
-     * @param subject
-     * @param payload
      */
     request(subject: string, payload: any, headers?: {
         [index: string]: string | Array<string>;
     }, timeoutTtl?: number): any;
+    request2(subject: string, payload: any, headers?: {
+        [index: string]: string | Array<string>;
+    }, timeoutTtl?: number): {
+        data: any;
+        headers?: {
+            [index: string]: string | Array<string>;
+        };
+    };
     /**
      * 抢占式(queue)侦听主题
      * @param subject
